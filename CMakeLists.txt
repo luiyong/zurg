@@ -33,6 +33,20 @@ CPMAddPackage(
   OPTIONS "FMT_INSTALL YES" # create an installable target
 )
 
+# Add spdlog dependency
+CPMAddPackage(
+  NAME spdlog
+  GIT_TAG v1.14.1
+  GITHUB_REPOSITORY gabime/spdlog
+)
+
+# Add eventpp dependency
+CPMAddPackage(
+  NAME eventpp
+  GIT_TAG v0.1.3
+  GITHUB_REPOSITORY wqking/eventpp
+)
+
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
@@ -53,9 +67,13 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>
 # Link dependencies
 target_link_libraries(${PROJECT_NAME} PRIVATE fmt::fmt)
 
+# Include directories for header-only dependencies
 target_include_directories(
-  ${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-                         $<INSTALL_INTERFACE:include/${PROJECT_NAME}-${PROJECT_VERSION}>
+  ${PROJECT_NAME} PUBLIC 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include/${PROJECT_NAME}-${PROJECT_VERSION}>
+    $<BUILD_INTERFACE:${spdlog_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${eventpp_SOURCE_DIR}/include>
 )
 
 # ---- Create an installable target ----
