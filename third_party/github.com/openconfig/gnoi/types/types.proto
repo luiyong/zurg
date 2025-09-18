@@ -1,0 +1,19 @@
+// Copyright 2017 Google Inc. All Rights Reserved.
+syntax = "proto3";
+package gnoi.types;
+import "google/protobuf/descriptor.proto";
+option go_package = "github.com/openconfig/gnoi/types";
+extend google.protobuf.FileOptions { string gnoi_version = 1002; }
+enum L3Protocol { UNSPECIFIED = 0; IPV4 = 1; IPV6 = 2; }
+message HashType {
+  enum HashMethod { UNSPECIFIED = 0; SHA256 = 1; SHA512 = 2; MD5 = 3; }
+  HashMethod method = 1;
+  bytes hash = 2; // raw bytes of hash
+}
+message Path { string origin = 2; repeated PathElem elem = 3; }
+message PathElem { string name = 1; map<string, string> key = 2; }
+message Credentials {
+  string username = 1;
+  oneof password { string cleartext = 2; HashType hashed = 3; }
+}
+

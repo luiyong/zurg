@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <spdlog/spdlog.h>
+#include <eventpp/eventqueue.h>
 
 namespace greeter {
 
@@ -26,6 +28,16 @@ namespace greeter {
      * @return a string containing the greeting
      */
     std::string greet(LanguageCode lang = LanguageCode::EN) const;
+    
+    // Example usage of spdlog
+    void log_greeting(LanguageCode lang = LanguageCode::EN) const;
+    
+    // Example usage of eventpp
+    using EventQueue = eventpp::EventQueue<int, void(const std::string&)>;
+    EventQueue& get_event_queue() const;
+
+  private:
+    mutable EventQueue event_queue_;
   };
 
 }  // namespace greeter

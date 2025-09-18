@@ -1,4 +1,20 @@
+# Top-level build
 /build*
+
+# Nested build dirs
+**/build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake-build-*/
+**/_deps/
+**/generated/
+**/compile_commands.json
+
+# IDE/editor
 /.vscode
-/cpm_modules
+.idea/
 .DS_Store
+.clangd
+
+# CPM cache
+/cpm_modules

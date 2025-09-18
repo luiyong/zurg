@@ -1,0 +1,14 @@
+// Copyright 2018 Google Inc. All Rights Reserved.
+syntax = "proto3";
+package gnoi.common;
+import "github.com/openconfig/gnoi/types/types.proto";
+option go_package = "github.com/openconfig/gnoi/common";
+message RemoteDownload {
+  string path = 1;
+  enum Protocol { UNKNOWN = 0; SFTP = 1; HTTP = 2; HTTPS = 3; SCP = 4; }
+  Protocol protocol = 2;
+  types.Credentials credentials = 3;
+  string source_address = 4;
+  string source_vrf = 5;
+}
+
