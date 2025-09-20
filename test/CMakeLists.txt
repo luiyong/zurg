@@ -61,6 +61,7 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     ${GNOI_PROTO_DIR}/common/common.proto
     ${GNOI_PROTO_DIR}/file/file.proto
     ${GNOI_PROTO_DIR}/packet_capture/packet_capture.proto
+    ${CMAKE_CURRENT_LIST_DIR}/../third_party/os.proto
   )
   set(GEN_SRC_DIR generated)
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${GEN_SRC_DIR})
@@ -96,7 +97,7 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     endif()
     list(APPEND GNOI_PB_SRCS ${pb_cc})
     list(APPEND GNOI_PB_HDRS ${pb_h})
-    if (fname STREQUAL "file" OR fname STREQUAL "packet_capture")
+    if (fname STREQUAL "file" OR fname STREQUAL "packet_capture" OR fname STREQUAL "os")
       set(grpc_cc ${CMAKE_CURRENT_BINARY_DIR}/${GEN_SRC_DIR}/${reldir}/${fname}.grpc.pb.cc)
       set(grpc_h  ${CMAKE_CURRENT_BINARY_DIR}/${GEN_SRC_DIR}/${reldir}/${fname}.grpc.pb.h)
       execute_process(
@@ -121,13 +122,48 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
   target_link_libraries(gnoi_file_test_protos PUBLIC ${GRPCPP_LIBRARIES} ${Protobuf_LIBRARIES})
 
   # 将 standalone 的服务实现加入到测试目标
-  target_sources(${PROJECT_NAME} PRIVATE 
-    ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/source/gnoi_file.cpp
+  set(GNOI_TEST_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/source/agent_test.cpp
   )
-  target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${GEN_SRC_DIR} ${CMAKE_CURRENT_LIST_DIR}/../include ${GRPCPP_INCLUDE_DIRS} ${Protobuf_INCLUDE_DIRS} ${PCAP_INCLUDE_DIRS})
+
+  if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp" AND
+      EXISTS "${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp")
+    list(APPEND GNOI_TEST_SOURCES
+      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/source/gnoi_file.cpp
+    )
+  endif()
+
+  target_sources(${PROJECT_NAME} PRIVATE ${GNOI_TEST_SOURCES})
+  target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/${GEN_SRC_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../include
+    ${CMAKE_CURRENT_LIST_DIR}/../standalone/source
+    ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent
+    ${GRPCPP_INCLUDE_DIRS}
+    ${Protobuf_INCLUDE_DIRS}
+    ${PCAP_INCLUDE_DIRS})
   target_compile_options(${PROJECT_NAME} PRIVATE ${GRPCPP_CFLAGS_OTHER} ${PCAP_CFLAGS_OTHER})
+  set(_fmt_header_found FALSE)
+  set(_fmt_candidates
+    ${CMAKE_CURRENT_LIST_DIR}/../build/_deps/fmt-src/include
+    ${CMAKE_CURRENT_LIST_DIR}/../build-standalone/_deps/fmt-src/include
+    ${CMAKE_CURRENT_LIST_DIR}/../_deps/fmt-src/include
+  )
+  foreach(path IN LISTS _fmt_candidates)
+    if (EXISTS "${path}/fmt/core.h")
+      target_include_directories(${PROJECT_NAME} PRIVATE ${path})
+      target_compile_definitions(${PROJECT_NAME} PRIVATE FMT_HEADER_ONLY=1)
+      set(_fmt_header_found TRUE)
+      break()
+    endif()
+  endforeach()
+  if (NOT _fmt_header_found)
+    find_package(fmt REQUIRED)
+    target_link_libraries(${PROJECT_NAME} PRIVATE fmt::fmt)
+  endif()
   target_link_libraries(${PROJECT_NAME} PRIVATE gnoi_file_test_protos ${GRPCPP_LIBRARIES} OpenSSL::Crypto ${PCAP_LIBRARIES})
   target_compile_definitions(${PROJECT_NAME} PRIVATE
     GRPC_CALLBACK_API_NONEXPERIMENTAL=1

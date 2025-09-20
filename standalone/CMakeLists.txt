@@ -195,7 +195,11 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     ${CMAKE_CURRENT_LIST_DIR}/source/agent/agent_impl.cpp
   )
   add_dependencies(GnoiAgent gnoi_file_protos)
-  target_include_directories(GnoiAgent PRIVATE ${GEN_SRC_DIR} ${CMAKE_CURRENT_LIST_DIR}/../include)
+  target_include_directories(GnoiAgent PRIVATE
+    ${GEN_SRC_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../include
+    ${CMAKE_CURRENT_LIST_DIR}/source
+    ${CMAKE_CURRENT_LIST_DIR}/source/agent)
   target_compile_definitions(GnoiAgent PRIVATE GRPC_CALLBACK_API_NONEXPERIMENTAL=1)
   target_include_directories(GnoiAgent PRIVATE ${GRPCPP_INCLUDE_DIRS} ${Protobuf_INCLUDE_DIRS} ${PCAP_INCLUDE_DIRS})
   target_compile_options(GnoiAgent PRIVATE ${GRPCPP_CFLAGS_OTHER} ${PCAP_CFLAGS_OTHER})
