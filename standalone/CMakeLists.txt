@@ -127,8 +127,8 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     # Unified server: File + PacketCapture
     add_executable(GnoiServer
       ${CMAKE_CURRENT_LIST_DIR}/source/gnoi_server.cpp
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/source/gnoi/file_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/source/gnoi/packet_capture_service.cpp
     )
     add_dependencies(GnoiServer gnoi_file_protos)
     target_include_directories(GnoiServer PRIVATE ${GEN_SRC_DIR} ${CMAKE_CURRENT_LIST_DIR}/../include)
@@ -144,7 +144,7 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
 
     add_executable(GnoiFileServer
       ${CMAKE_CURRENT_LIST_DIR}/source/gnoi_file_server.cpp
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/source/gnoi/file_service.cpp
     )
     add_dependencies(GnoiFileServer gnoi_file_protos)
     target_include_directories(GnoiFileServer PRIVATE ${GEN_SRC_DIR} ${CMAKE_CURRENT_LIST_DIR}/../include)
@@ -159,7 +159,7 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
 
     add_executable(GnoiFileSelfTest
       ${CMAKE_CURRENT_LIST_DIR}/source/gnoi/gnoi_file_selftest.cpp
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/source/gnoi/file_service.cpp
     )
     add_dependencies(GnoiFileSelfTest gnoi_file_protos)
     target_include_directories(GnoiFileSelfTest PRIVATE ${GEN_SRC_DIR} ${CMAKE_CURRENT_LIST_DIR}/../include)
@@ -175,7 +175,7 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     # Optional: standalone PacketCapture server (kept for dev use)
     add_executable(GnoiPcapServer
       ${CMAKE_CURRENT_LIST_DIR}/source/gnoi_pcap_server.cpp
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/source/gnoi/packet_capture_service.cpp
     )
     add_dependencies(GnoiPcapServer gnoi_file_protos)
     target_include_directories(GnoiPcapServer PRIVATE ${GEN_SRC_DIR} ${CMAKE_CURRENT_LIST_DIR}/../include)

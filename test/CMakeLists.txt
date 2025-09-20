@@ -124,14 +124,16 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
   # 将 standalone 的服务实现加入到测试目标
   set(GNOI_TEST_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/file_ops.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp
     ${CMAKE_CURRENT_LIST_DIR}/source/agent_test.cpp
   )
 
-  if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp" AND
-      EXISTS "${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp")
+  if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/../standalone/source/gnoi/file_service.cpp" AND
+      EXISTS "${CMAKE_CURRENT_LIST_DIR}/../standalone/source/gnoi/packet_capture_service.cpp")
     list(APPEND GNOI_TEST_SOURCES
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/file_service.cpp
-      ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/gnoi/packet_capture_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/gnoi/file_service.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/gnoi/packet_capture_service.cpp
       ${CMAKE_CURRENT_LIST_DIR}/source/gnoi_file.cpp
     )
   endif()
