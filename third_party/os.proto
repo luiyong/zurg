@@ -1,0 +1,205 @@
+syntax = "proto3";
+
+package ops.v1;
+
+option go_package  = "ops/v1;ops";
+option java_package = "com.example.ops.v1";
+option java_multiple_files = true;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// ===================== Common =====================
+
+message OperationMeta {
+  string op_id  = 1; // 由 Server 指定，全局唯一，幂等与关联
+  string tenant = 2;
+  string actor  = 3; // 谁发起（审计）
+}
+
+message Checksum {
+  enum Type { TYPE_UNSPECIFIED = 0; MD5 = 1; SHA256 = 2; SHA512 = 3; }
+  Type  type   = 1;
+  bytes digest = 2;
+}
+
+message LogLine {
+  google.protobuf.Timestamp time = 1;
+  string level = 2; // INFO/WARN/ERROR/DEBUG
+  string msg   = 3;
+}
+
+// Agent 在首次连上时上报自身能力
+message Capability {
+  repeated string if_names = 1; // 可抓包网口
+  bool supports_shell      = 2;
+  bool supports_promisc    = 3;
+  repeated string allowed_exec_cmds = 4; // Server 也会做 AuthZ，这里仅供参考/展示
+}
+
+message AgentHello {
+  string agent_id   = 1;
+  string version    = 2;
+  string platform   = 3; // linux/windows/container/...
+  Capability caps   = 4;
+}
+
+message Heartbeat { string agent_id = 1; uint64 seq = 2; }
+
+// ===================== 控制通道 =====================
+//
+// 由 Agent 主动调用 Connect()（Agent=client，Server=server），
+// 建立一条双向流；Server 在流上“发起操作”，Agent 回传数据。
+service Control {
+  rpc Connect(stream AgentToServer) returns (stream ServerToAgent);
+}
+
+// ========== Server -> Agent（发起/控制） ==========
+message ServerToAgent {
+  oneof msg {
+    StartOp   start   = 1; // 下发新操作
+    CancelOp  cancel  = 2; // 取消既有操作
+    Shutdown  shutdown= 3; // 让 Agent 平滑退出（可选）
+    Heartbeat ping    = 4; // 保活
+  }
+}
+
+message StartOp {
+  OperationMeta meta = 1;
+
+  oneof spec {
+    FileGetSpec file_get = 10;
+    PcapSpec    pcap     = 11;
+    ExecSpec    exec     = 12;
+  }
+}
+
+message CancelOp { string op_id = 1; }  // 要求 Agent 立即停止对应操作（尽量可中断）
+message Shutdown { bool drain = 1; }    // drain=true 则待所有操作完成后退出
+
+// ========== Agent -> Server（响应/结果） ==========
+message AgentToServer {
+  oneof msg {
+    AgentHello hello = 1;   // 连接建立后 Agent 先发
+    Heartbeat  pong  = 2;
+
+    // 操作生命周期：ACK -> DATA/LOG/PROGRESS(可选循环) -> EOF/ERROR
+    OpAck     ack     = 10;
+    OpLog     log     = 11;
+    OpProgress progress = 12;
+    OpData    data    = 13;
+    OpEof     eof     = 14;
+    OpError   error   = 15;
+  }
+}
+
+message OpAck { string op_id = 1; bool accepted = 2; string reason = 3; }
+message OpLog { string op_id = 1; LogLine line = 2; }
+message OpProgress { string op_id = 1; uint32 pct = 2; string note = 3; }
+
+message OpData {
+  string op_id = 1;
+
+  oneof payload {
+    FileChunk file_chunk = 10;
+    PcapPacket pcap_packet = 11;
+    ExecChunk exec_chunk = 12;
+  }
+}
+
+message OpEof {
+  string op_id = 1;
+  // 不同操作可带不同的“收尾信息”
+  oneof trailer {
+    FileGetEof file = 10;
+    PcapStats  pcap = 11;
+    ExecExit   exec = 12;
+  }
+}
+
+message OpError { string op_id = 1; string code = 2; string message = 3; }
+
+// ===================== 文件：日志下载 =====================
+// Server 主动要求 Agent 把某个文件“上传回流”到当前通道。
+message FileGetSpec {
+  string path   = 1;  // 仅允许白名单
+  int64  offset = 2;  // 断点续传
+  int64  length = 3;  // 0 表示到结尾
+  bool   compress = 4; // Agent 本地 gzip 后再发
+  Checksum expect = 5; // 可选：Server 预期的原始文件校验值
+}
+
+message FileChunk {
+  int64 offset = 1;
+  bytes data   = 2; // 建议单块 <= 64KiB
+}
+
+message FileGetEof {
+  int64    total_size = 1;   // 原始文件大小（未压缩）
+  Checksum checksum    = 2;  // 原始文件校验
+}
+
+// ===================== 抓包 =====================
+message PcapSpec {
+  string if_name = 1;
+
+  enum Direction { DIR_UNSPECIFIED = 0; INGRESS = 1; EGRESS = 2; BOTH = 3; }
+  Direction direction = 2;
+
+  oneof filter {
+    string bpf = 3; // tcpdump 表达式
+    StructuredFilter structured = 4;
+  }
+
+  google.protobuf.Duration duration = 5;  // 抓包最长时长
+  uint64 packet_limit               = 6;  // 最大包数
+  uint32 snaplen                    = 7;  // 每包最大字节
+  uint32 payload_trim_bytes         = 8;  // 传输前再裁剪
+  bool   promisc                    = 9;  // 混杂模式（需权限）
+}
+
+message StructuredFilter {
+  repeated string src_cidr = 1;
+  repeated string dst_cidr = 2;
+  repeated uint32 src_port = 3;
+  repeated uint32 dst_port = 4;
+  repeated string protocol = 5; // tcp/udp/icmp/arp...
+  repeated uint32 vlan     = 6;
+}
+
+message PcapPacket {
+  google.protobuf.Timestamp ts = 1;
+  uint32 orig_len = 2;
+  bytes  data     = 3; // 可能经 snaplen/trim 后的内容
+}
+
+message PcapStats {
+  uint64 received   = 1;
+  uint64 dropped    = 2;
+  uint64 if_dropped = 3;
+}
+
+// ===================== 命令执行（受控） =====================
+message ExecSpec {
+  string cmd             = 1;            // 可执行文件或模板化命令
+  repeated string args   = 2;
+  map<string,string> env = 3;
+  string working_dir     = 4;
+
+  google.protobuf.Duration timeout = 5;
+  uint64 max_output_bytes          = 6;   // Agent 侧硬限制（再叠加 Server 侧接收限制）
+  bool   shell_mode                = 7;   // /bin/sh -c；默认 false
+  string run_as_user               = 8;   // Agent 根据本地策略允许时才生效
+  uint32 run_as_uid                = 9;
+  uint32 run_as_gid                = 10;
+  bool   allocate_tty              = 11;  // 仅在 shell_mode/交互工具且可控时使用
+}
+
+message ExecChunk {
+  oneof stream {
+    bytes stdout = 1;
+    bytes stderr = 2;
+  }
+}
+
+message ExecExit { int32 code = 1; string note = 2; }

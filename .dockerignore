@@ -1,0 +1,9 @@
+.git
+.gitignore
+**/build/
+**/_deps/
+**/generated/
+cmake-build-*/
+*.swp
+*.swo
+.DS_Store
