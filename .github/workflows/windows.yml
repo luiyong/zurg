@@ -27,7 +27,7 @@ jobs:
           key: ${{ github.workflow }}-cpm-modules-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
 
       - name: configure
-        run: cmake -Stest -Bbuild
+        run: cmake -Stest -Bbuild -DGTest_ROOT=$env:GITHUB_WORKSPACE/local/gtest
 
       - name: build
         run: cmake --build build --config Debug -j4
