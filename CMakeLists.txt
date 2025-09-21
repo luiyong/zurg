@@ -47,6 +47,9 @@ CPMAddPackage(
   GITHUB_REPOSITORY wqking/eventpp
 )
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PCAP REQUIRED libpcap)
+
 find_package(Protobuf REQUIRED)
 
 set(PROTO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
@@ -87,7 +90,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
 target_compile_options(${PROJECT_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/permissive->")
 
 # Link dependencies
-target_link_libraries(${PROJECT_NAME} PRIVATE fmt::fmt protobuf::libprotobuf)
+target_link_libraries(${PROJECT_NAME} PRIVATE fmt::fmt protobuf::libprotobuf ${PCAP_LIBRARIES})
 
 # Include directories for header-only dependencies
 target_include_directories(
@@ -97,7 +100,9 @@ target_include_directories(
     $<BUILD_INTERFACE:${spdlog_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${eventpp_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${GENERATED_PROTO_DIR}>
+    $<BUILD_INTERFACE:${PCAP_INCLUDE_DIRS}>
 )
+target_compile_options(${PROJECT_NAME} PRIVATE ${PCAP_CFLAGS_OTHER})
 
 # ---- Create an installable target ----
 # this allows users to install and find the library via `find_package()`.
