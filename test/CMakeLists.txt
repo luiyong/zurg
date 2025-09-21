@@ -13,6 +13,22 @@ option(TEST_INSTALLED_VERSION "Test the version found by find_package" OFF)
 
 ## 不再使用 CPM，避免网络依赖
 
+# Ensure gNOI protos are available
+set(GNOI_PROTO_ROOT ${CMAKE_CURRENT_LIST_DIR}/../third_party/github.com/openconfig/gnoi)
+if (NOT EXISTS "${GNOI_PROTO_ROOT}/types/types.proto")
+  message(STATUS "Fetching gNOI protos (git clone)")
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../third_party/github.com/openconfig)
+  execute_process(
+    COMMAND git clone --depth 1 https://github.com/openconfig/gnoi ${GNOI_PROTO_ROOT}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../third_party/github.com/openconfig
+    RESULT_VARIABLE GNOI_CLONE_RESULT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if (NOT GNOI_CLONE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to clone gNOI protos")
+  endif()
+endif()
+
 # 使用系统安装的 GoogleTest（建议通过包管理器安装）
 find_package(GTest REQUIRED)
 

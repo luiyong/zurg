@@ -21,6 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install protobuf grpc googletest libpcap fmt
+
       - uses: actions/cache@v3
         with:
           path: "**/cpm_modules"
@@ -34,7 +39,9 @@ jobs:
           fi
 
       - name: configure
-        run: cmake -Stest -Bbuild -DCMAKE_BUILD_TYPE=Debug -DGTest_ROOT=${{ github.workspace }}/local/gtest
+        run: |
+          GTEST_ROOT=$(brew --prefix googletest)
+          cmake -Stest -Bbuild -DCMAKE_BUILD_TYPE=Debug -DGTest_ROOT=$GTEST_ROOT
 
       - name: build
         run: cmake --build build -j4
