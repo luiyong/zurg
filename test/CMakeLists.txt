@@ -30,6 +30,13 @@ set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
 
 # 这里不设置上层 Greeter 目标的编译选项，避免依赖上层工程
 
+# ---- 代码覆盖率配置 ----
+if (ENABLE_TEST_COVERAGE)
+  set(COVERAGE_FLAGS --coverage -O0 -g)
+  target_compile_options(${PROJECT_NAME} PRIVATE ${COVERAGE_FLAGS})
+  target_link_options(${PROJECT_NAME} PRIVATE --coverage)
+endif()
+
 # ---- Add GreeterTests ----
 
 enable_testing()
@@ -119,6 +126,9 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
   add_library(gnoi_file_test_protos ${GNOI_PB_SRCS} ${GNOI_GRPC_SRCS})
   target_include_directories(gnoi_file_test_protos PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/${GEN_SRC_DIR} ${PROTO_ROOT} ${GRPCPP_INCLUDE_DIRS} ${Protobuf_INCLUDE_DIRS})
   target_compile_options(gnoi_file_test_protos PUBLIC ${GRPCPP_CFLAGS_OTHER})
+  if (ENABLE_TEST_COVERAGE)
+    target_compile_options(gnoi_file_test_protos PRIVATE ${COVERAGE_FLAGS})
+  endif()
   target_link_libraries(gnoi_file_test_protos PUBLIC ${GRPCPP_LIBRARIES} ${Protobuf_LIBRARIES})
 
   # 将 standalone 的服务实现加入到测试目标
@@ -126,6 +136,8 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/file_ops.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/source/file_ops_unit.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/source/pcap_ops_test.cpp
     ${CMAKE_CURRENT_LIST_DIR}/source/agent_test.cpp
   )
 
@@ -174,4 +186,7 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
     ZURG_HAS_GNOI_PCAP_SERVICE=1
   )
   target_compile_definitions(${PROJECT_NAME} PRIVATE ZURG_HAVE_OPENSSL=1 ZURG_HAVE_PCAP=1)
+  if (ENABLE_TEST_COVERAGE)
+    target_link_options(${PROJECT_NAME} PRIVATE --coverage)
+  endif()
 endif()

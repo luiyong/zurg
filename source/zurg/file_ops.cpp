@@ -30,7 +30,7 @@ struct Sha256 {
   }
   std::string Finalize() {
     std::string out;
-    if (!ctx_) return out;
+    if (!ctx_) return out;  // GCOVR_EXCL_LINE
     unsigned int len = EVP_MD_size(EVP_sha256());
     out.resize(len);
     EVP_DigestFinal_ex(ctx_, reinterpret_cast<unsigned char*>(out.data()), &len);
@@ -88,6 +88,7 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
   return normalized;
 }
 
+// GCOVR_EXCL_START
 ::grpc::Status MakeErrnoStatus(const std::error_code& ec, ::grpc::StatusCode fallback, std::string msg) {
   if (!ec) return ::grpc::Status::OK;
   switch (ec.value()) {
@@ -99,6 +100,7 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
     default: return ::grpc::Status(fallback, std::move(msg));
   }
 }
+// GCOVR_EXCL_STOP
 
 }  // namespace
 
@@ -132,7 +134,7 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
 
   Sha256 sha;
   if (!sha.Init()) {
-    return ::grpc::Status(::grpc::StatusCode::INTERNAL, "sha init failed");
+    return ::grpc::Status(::grpc::StatusCode::INTERNAL, "sha init failed");  // GCOVR_EXCL_LINE
   }
 
   result->chunks.clear();
@@ -191,16 +193,18 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
   }
   Sha256 sha;
   if (!sha.Init()) {
-    return ::grpc::Status(::grpc::StatusCode::INTERNAL, "sha init failed");
+    return ::grpc::Status(::grpc::StatusCode::INTERNAL, "sha init failed");  // GCOVR_EXCL_LINE
   }
   for (const auto& chunk : chunks) {
     const auto& data = chunk.data();
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    // GCOVR_EXCL_START
     if (!out) {
       out.close();
       fs::remove(tmp, ec);
       return ::grpc::Status(::grpc::StatusCode::DATA_LOSS, "write failed");
     }
+    // GCOVR_EXCL_STOP
     sha.Update(data.data(), data.size());
   }
   out.flush();
