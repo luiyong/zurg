@@ -48,6 +48,20 @@ if (GRPCPP_FOUND AND PCAP_FOUND AND Protobuf_PROTOC_EXECUTABLE)
   get_filename_component(PROTO_ROOT ${PROTO_ROOT} REALPATH)
   set(GNOI_PROTO_DIR ${PROTO_ROOT}/github.com/openconfig/gnoi)
 
+  if (NOT EXISTS "${GNOI_PROTO_DIR}/types/types.proto")
+    message(STATUS "Fetching gNOI protos (git clone)")
+    file(MAKE_DIRECTORY ${PROTO_ROOT}/github.com/openconfig)
+    execute_process(
+      COMMAND git clone --depth 1 https://github.com/openconfig/gnoi ${GNOI_PROTO_DIR}
+      WORKING_DIRECTORY ${PROTO_ROOT}/github.com/openconfig
+      RESULT_VARIABLE GNOI_CLONE_RESULT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if (NOT GNOI_CLONE_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to clone gNOI protos")
+    endif()
+  endif()
+
   set(PROTO_FILES
     ${GNOI_PROTO_DIR}/types/types.proto
     ${GNOI_PROTO_DIR}/common/common.proto
