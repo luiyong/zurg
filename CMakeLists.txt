@@ -117,3 +117,52 @@ packageProject(
   COMPATIBILITY SameMajorVersion
   DEPENDENCIES "fmt 10.2.1;protobuf"
 )
+
+# ---- Formatting checks ----
+find_program(CLANG_FORMAT_EXECUTABLE NAMES clang-format)
+if(CLANG_FORMAT_EXECUTABLE)
+  file(GLOB_RECURSE CLANG_FORMAT_SOURCES
+    ${PROJECT_SOURCE_DIR}/include/*.h
+    ${PROJECT_SOURCE_DIR}/source/*.cpp
+    ${PROJECT_SOURCE_DIR}/standalone/source/*.cpp
+    ${PROJECT_SOURCE_DIR}/standalone/source/*.h
+    ${PROJECT_SOURCE_DIR}/test/source/*.cpp
+    ${PROJECT_SOURCE_DIR}/test/source/*.h
+  )
+  if(CLANG_FORMAT_SOURCES)
+    add_custom_target(check-clang-format
+      COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run --Werror ${CLANG_FORMAT_SOURCES}
+      COMMENT "Checking C/C++ formatting with clang-format"
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+  endif()
+endif()
+
+find_program(CMAKE_FORMAT_EXECUTABLE NAMES cmake-format)
+if(CMAKE_FORMAT_EXECUTABLE)
+  set(CMAKE_FORMAT_FILES
+    ${PROJECT_SOURCE_DIR}/CMakeLists.txt
+    ${PROJECT_SOURCE_DIR}/standalone/CMakeLists.txt
+    ${PROJECT_SOURCE_DIR}/test/CMakeLists.txt
+    ${PROJECT_SOURCE_DIR}/cmake/tools.cmake
+  )
+  add_custom_target(check-cmake-format
+    COMMAND ${CMAKE_FORMAT_EXECUTABLE} --check ${CMAKE_FORMAT_FILES}
+    COMMENT "Checking CMake formatting with cmake-format"
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
+endif()
+
+if(TARGET check-clang-format OR TARGET check-cmake-format)
+  add_custom_target(check-format)
+  if(TARGET check-clang-format)
+    add_dependencies(check-format check-clang-format)
+  endif()
+  if(TARGET check-cmake-format)
+    add_dependencies(check-format check-cmake-format)
+  endif()
+else()
+  add_custom_target(check-format
+    COMMAND ${CMAKE_COMMAND} -E echo "check-format skipped: clang-format and cmake-format not available"
+  )
+endif()
