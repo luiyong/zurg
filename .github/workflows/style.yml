@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install -y build-essential cmake pkg-config libprotobuf-dev protobuf-compiler protobuf-compiler-grpc libgrpc++-dev libpcap-dev libssl-dev libfmt-dev
 
       - name: configure
-        run: cmake -Stest -Bbuild -DGTest_ROOT=${{ github.workspace }}/local/gtest
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: check style
         run: cmake --build build --target check-format
