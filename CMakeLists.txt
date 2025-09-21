@@ -147,7 +147,7 @@ if(CMAKE_FORMAT_EXECUTABLE)
     ${PROJECT_SOURCE_DIR}/cmake/tools.cmake
   )
   add_custom_target(check-cmake-format
-    COMMAND ${CMAKE_FORMAT_EXECUTABLE} --check ${CMAKE_FORMAT_FILES}
+    COMMAND ${CMAKE_FORMAT_EXECUTABLE} --config-files ${PROJECT_SOURCE_DIR}/cmake-format.yaml --check ${CMAKE_FORMAT_FILES}
     COMMENT "Checking CMake formatting with cmake-format"
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
   )
