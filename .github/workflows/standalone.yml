@@ -25,7 +25,13 @@ jobs:
           path: "**/cpm_modules"
           key: ${{ github.workflow }}-cpm-modules-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libprotobuf-dev protobuf-compiler libgrpc++-dev libpcap-dev libssl-dev
+
       - name: configure
+        run: cmake -Sstandalone -Bbuild -DCMAKE_BUILD_TYPE=Debug
         run: cmake -Sstandalone -Bbuild -DCMAKE_BUILD_TYPE=Debug
 
       - name: build
