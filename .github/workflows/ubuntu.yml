@@ -27,16 +27,48 @@ jobs:
           path: "**/cpm_modules"
           key: ${{ github.workflow }}-cpm-modules-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
 
-      - name: configure
-        run: cmake -Stest -Bbuild -DENABLE_TEST_COVERAGE=1 -DCMAKE_BUILD_TYPE=Debug
-
-      - name: build
-        run: cmake --build build -j4
-
-      - name: test
+      - name: Install dependencies
         run: |
-          cd build
-          ctest --build-config Debug
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build cmake pkg-config \
+            libprotobuf-dev protobuf-compiler libgrpc++-dev libpcap-dev libssl-dev gcovr
+
+      - name: Configure project
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Configure tests
+        run: cmake -S test -B test/build -DGTest_ROOT=${{ github.workspace }}/local/gtest -DENABLE_TEST_COVERAGE=1 -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build tests
+        run: cmake --build test/build
+
+      - name: Test
+        run: ctest --output-on-failure --test-dir test/build
+
+      - name: Coverage report
+        run: |
+          mkdir -p coverage
+          gcovr -r ${{ github.workspace }} \
+            --object-directory test/build \
+            --txt coverage/summary.txt \
+            --xml coverage/coverage.xml \
+            --html-details coverage/index.html \
+            --filter "${{ github.workspace }}/source/zurg" \
+            --exclude 'third_party/.*' \
+            --exclude 'build/.*/.*' \
+            --exclude 'test/build/generated/.*' \
+            --exclude 'local/gtest/.*' \
+            --exclude 'standalone/.*' \
+            --exclude 'test/source/.*' \
+            --fail-under-line 90
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage
 
       - name: collect code coverage
         run: bash <(curl -s https://codecov.io/bash) || echo "Codecov did not collect coverage reports"
