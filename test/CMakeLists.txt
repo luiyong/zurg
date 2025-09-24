@@ -22,6 +22,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GRPCPP REQUIRED grpc++)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
+find_path(SPDLOG_INCLUDE_DIR spdlog/spdlog.h
+  HINTS
+    ${CMAKE_CURRENT_LIST_DIR}/../build/_deps/spdlog-src/include
+    ${CMAKE_CURRENT_LIST_DIR}/../build-debug/_deps/spdlog-src/include
+    ${CMAKE_CURRENT_LIST_DIR}/../build-standalone/_deps/spdlog-src/include
+    ${CMAKE_CURRENT_LIST_DIR}/../third_party/spdlog/include
+)
+
+if(NOT SPDLOG_INCLUDE_DIR)
+  message(FATAL_ERROR "spdlog headers not found; configure the main project first")
+endif()
+
 set(PROTO_ROOT ${CMAKE_CURRENT_LIST_DIR}/../third_party)
 set(GENERATED_PROTO_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(OS_PROTO ${PROTO_ROOT}/os.proto)
@@ -50,8 +62,10 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/source/file_ops_unit.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/pcap_ops_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/agent_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/logger_manager_test.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/file_ops.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/logger_manager.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
   ${OS_PROTO_SRC}
 )
@@ -78,6 +92,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent
   ${GENERATED_PROTO_DIR}
+  ${SPDLOG_INCLUDE_DIR}
   ${GRPCPP_INCLUDE_DIRS}
   ${PCAP_INCLUDE_DIRS}
 )
