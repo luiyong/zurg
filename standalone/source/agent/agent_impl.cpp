@@ -1,10 +1,12 @@
 #include "agent_impl.h"
 
-#include <fmt/core.h>
-
 #include "zurg/file_ops.h"
+#include "zurg/logger_manager.h"
 #include "zurg/pcap_ops.h"
 
+#include <spdlog/sinks/stdout_color_sinks.h>
+
+#include <cstdio>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -28,6 +30,9 @@ std::mutex g_hook_mu;
 std::function<std::chrono::milliseconds(std::size_t)> g_backoff_hook;
 std::function<void(std::chrono::milliseconds)> g_sleep_hook;
 std::function<void(const ops::v1::AgentToServer&)> g_send_hook;
+std::once_flag g_logger_once;
+std::shared_ptr<spdlog::logger> g_logger;
+std::shared_ptr<spdlog::sinks::sink> g_logger_sink;
 }
 
 bool IsRunning() { return g_running.load(); }
@@ -64,6 +69,24 @@ void SetSendHookForTests(std::function<void(const ops::v1::AgentToServer&)> hook
 std::function<void(const ops::v1::AgentToServer&)> GetSendHook() {
   std::lock_guard<std::mutex> lock(g_hook_mu);
   return g_send_hook;
+}
+
+std::shared_ptr<spdlog::logger> GetLogger() {
+  std::call_once(g_logger_once, [] {
+    logging::LoggerManager::init({});
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    logging::LoggerManager::add_sink(console_sink);
+    if (g_logger_sink) {
+      logging::LoggerManager::add_sink(g_logger_sink);
+    }
+    g_logger = logging::LoggerManager::logger("agent.callback");
+  });
+  return g_logger;
+}
+
+void SetLoggerSinkForTests(std::shared_ptr<spdlog::sinks::sink> sink) {
+  std::lock_guard<std::mutex> lock(g_hook_mu);
+  g_logger_sink = std::move(sink);
 }
 
 std::chrono::milliseconds ComputeBackoff(std::size_t attempt) {
@@ -156,7 +179,7 @@ struct PendingTask {
 
 class ControlCallbackClient;
 
-class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServer, ops::v1::ServerToAgent> {
+class ControlStreamReactor : public grpc::experimental::ClientBidiReactor<ops::v1::AgentToServer, ops::v1::ServerToAgent> {
  public:
   ControlStreamReactor(ControlCallbackClient* parent,
                        ops::v1::Control::StubInterface* stub,
@@ -193,7 +216,8 @@ class ControlCallbackClient {
   ControlCallbackClient(ops::v1::Control::StubInterface* stub,
                         std::string agent_id,
                         Options options)
-      : stub_(stub), agent_id_(std::move(agent_id)), options_(std::move(options)) {
+      : stub_(stub), agent_id_(std::move(agent_id)), options_(std::move(options)),
+        logger_(internal::GetLogger()) {
     if (!options_.should_run) {
       options_.should_run = [] { return true; };
     }
@@ -211,12 +235,14 @@ class ControlCallbackClient {
   ~ControlCallbackClient() { Stop(); }
 
   void Run() {
+    logger_->info("starting callback client for agent {}", agent_id_);
     running_.store(true);
     worker_thread_ = std::thread(&ControlCallbackClient::WorkerLoop, this);
 
     std::size_t attempt = 0;
     while (options_.should_run && options_.should_run()) {
       grpc::ClientContext ctx;
+      logger_->info("connecting to control stream (attempt={})", attempt + 1);
       ControlStreamReactor reactor(this, stub_, &ctx);
       reactor.Begin();
       grpc::Status status = reactor.Wait();
@@ -231,9 +257,13 @@ class ControlCallbackClient {
         break;
       }
       ++attempt;
-      options_.sleep_fn(options_.backoff_fn(attempt));
+      auto delay = options_.backoff_fn(attempt);
+      logger_->warn("stream closed (code={}, message='{}'), reconnecting in {} ms",
+                    static_cast<int>(status.error_code()), status.error_message(), delay.count());
+      options_.sleep_fn(delay);
     }
 
+    logger_->info("stopping callback client for agent {}", agent_id_);
     Stop();
   }
 
@@ -323,6 +353,7 @@ class ControlCallbackClient {
     if (!reason.empty()) {
       ack->set_reason(std::move(reason));
     }
+    logger_->debug("send Ack op_id={} accepted={} reason={}", op_id, accepted, reason);
     EnqueueWrite(std::move(msg));
   }
 
@@ -332,6 +363,7 @@ class ControlCallbackClient {
     err->set_op_id(op_id);
     err->set_code(std::move(code));
     err->set_message(std::move(message));
+    logger_->warn("send Error op_id={} code={} message={}", op_id, err->code(), err->message());
     EnqueueWrite(std::move(msg));
   }
 
@@ -356,6 +388,7 @@ class ControlCallbackClient {
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
     tail->mutable_file()->CopyFrom(eof);
+    logger_->info("file op {} completed", op_id);
     EnqueueWrite(std::move(msg));
   }
 
@@ -364,12 +397,16 @@ class ControlCallbackClient {
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
     tail->mutable_pcap()->CopyFrom(stats);
+    logger_->info("pcap op {} completed packets={} dropped={}", op_id, stats.received(), stats.dropped());
     EnqueueWrite(std::move(msg));
   }
 
   void HandleStartOp(const ops::v1::StartOp& start) {
     const std::string op_id = start.meta().op_id();
     if (op_id.empty()) {
+      if (logger_) {
+        logger_->warn("received StartOp with missing op_id");
+      }
       SendAck(op_id, false, "missing op_id");
       return;
     }
@@ -378,10 +415,16 @@ class ControlCallbackClient {
     {
       std::lock_guard<std::mutex> lock(mu_);
       if (drain_mode_) {
+        if (logger_) {
+          logger_->warn("reject StartOp op_id={} reason=draining", op_id);
+        }
         SendAck(op_id, false, "draining");
         return;
       }
       if (tasks_.count(op_id)) {
+        if (logger_) {
+          logger_->warn("reject StartOp op_id={} reason=duplicate", op_id);
+        }
         SendAck(op_id, false, "duplicate op_id");
         return;
       }
@@ -391,6 +434,9 @@ class ControlCallbackClient {
       } else if (start.has_pcap()) {
         type = PendingTask::Type::kPcap;
       } else {
+        if (logger_) {
+          logger_->warn("reject StartOp op_id={} reason=unsupported", op_id);
+        }
         SendAck(op_id, false, "unsupported operation");
         return;
       }
@@ -402,6 +448,8 @@ class ControlCallbackClient {
       tasks_[op_id] = task;
     }
 
+    logger_->info("accepted StartOp type={} op_id={}", task->type == PendingTask::Type::kFileGet ? "file" : "pcap",
+                  op_id);
     SendAck(op_id, true);
     task_cv_.notify_all();
   }
@@ -412,6 +460,9 @@ class ControlCallbackClient {
       std::lock_guard<std::mutex> lock(mu_);
       auto it = tasks_.find(op_id);
       if (it == tasks_.end()) {
+        if (logger_) {
+          logger_->debug("cancel ignored, op_id={} not found", op_id);
+        }
         return;
       }
       target = it->second.lock();
@@ -429,6 +480,9 @@ class ControlCallbackClient {
         task_queue_.erase(q_it);
         tasks_.erase(op_id);
       } else {
+        if (logger_) {
+          logger_->debug("cancel op_id={} no longer queued", op_id);
+        }
         return;
       }
     }
@@ -443,6 +497,7 @@ class ControlCallbackClient {
     {
       std::lock_guard<std::mutex> lock(mu_);
       drain_mode_ = drain;
+      logger_->info("received shutdown request drain={} queue_size={}", drain, task_queue_.size());
       if (!drain) {
         CancelAllLocked("shutdown");
       }
@@ -454,6 +509,10 @@ class ControlCallbackClient {
   }
 
   void CancelAllLocked(std::string_view reason) {
+    if (logger_) {
+      logger_->warn("cancelling all tasks reason={} queue_size={} current={}", reason,
+                    task_queue_.size(), current_task_ ? current_task_->op_id : "none");
+    }
     for (auto& entry : tasks_) {
       if (auto ptr = entry.second.lock()) {
         ptr->cancelled.store(true);
@@ -542,6 +601,10 @@ class ControlCallbackClient {
         task = task_queue_.front();
         task_queue_.pop_front();
         current_task_ = task;
+        if (logger_ && task) {
+          logger_->info("starting task op_id={} type={}", task->op_id,
+                        task->type == PendingTask::Type::kFileGet ? "file" : "pcap");
+        }
       }
 
       RunTask(task);
@@ -549,6 +612,9 @@ class ControlCallbackClient {
       {
         std::lock_guard<std::mutex> lock(mu_);
         tasks_.erase(task->op_id);
+        if (logger_ && task) {
+          logger_->info("task finished op_id={} cancelled={}", task->op_id, task->cancelled.load());
+        }
         current_task_.reset();
         if (drain_mode_ && task_queue_.empty()) {
           running_.store(false);
@@ -576,6 +642,7 @@ class ControlCallbackClient {
   std::shared_ptr<PendingTask> current_task_;
   bool drain_mode_ = false;
   bool stop_worker_ = false;
+  std::shared_ptr<spdlog::logger> logger_;
 };
 
 ControlStreamReactor::ControlStreamReactor(ControlCallbackClient* parent,
@@ -627,7 +694,12 @@ void ControlStreamReactor::OnDone(const ::grpc::Status& status) {
 
 void StartAgent(ops::v1::Control::StubInterface* stub, const std::string& agent_id) {
   if (!stub) {
-    fmt::print(stderr, "[agent] missing stub, aborting\n");
+    auto logger = internal::GetLogger();
+    if (logger) {
+      logger->error("missing stub, aborting agent startup");
+    } else {
+      std::fprintf(stderr, "[agent] missing stub, aborting\n");
+    }
     return;
   }
 

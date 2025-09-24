@@ -1,16 +1,16 @@
 #pragma once
 
-#ifndef GRPC_CALLBACK_API_NONEXPERIMENTAL
-#define GRPC_CALLBACK_API_NONEXPERIMENTAL 1
-#endif
-
 #include <grpcpp/grpcpp.h>
+#include <grpcpp/impl/codegen/server_callback_handlers.h>
 
 #include "os.grpc.pb.h"
 
 #include <chrono>
 #include <functional>
 #include <string>
+
+#include <memory>
+#include <spdlog/sinks/sink.h>
 
 namespace zurg { namespace agent {
 
@@ -27,6 +27,7 @@ void ClearTestHooks();
 std::chrono::milliseconds ComputeBackoff(std::size_t attempt);
 void SleepWithStop(std::chrono::milliseconds delay);
 void SetSendHookForTests(std::function<void(const ops::v1::AgentToServer&)> hook);
+void SetLoggerSinkForTests(std::shared_ptr<spdlog::sinks::sink> sink);
 
 }  // namespace internal
 
