@@ -106,6 +106,39 @@ TEST(FileOpsTest, ReadFileMissingSource) {
   EXPECT_EQ(s.error_code(), ::grpc::StatusCode::NOT_FOUND);
 }
 
+TEST(FileOpsTest, ReadFileComputesChecksumWhenAbsent) {
+  TempDir tmp("checksum_auto");
+  const std::string contents = "auto-checksum";
+  std::ofstream(tmp.path / "auto.txt") << contents;
+
+  zurg::file_ops::Options opts{tmp.path.string()};
+  ops::v1::FileGetSpec spec;
+  spec.set_path("auto.txt");
+
+  zurg::file_ops::FileGetResult result;
+  ::grpc::Status s = zurg::file_ops::ReadFile(opts, spec, &result);
+  ASSERT_TRUE(s.ok());
+  EXPECT_EQ(result.eof.checksum().type(), ops::v1::Checksum::SHA256);
+  EXPECT_FALSE(result.eof.checksum().digest().empty());
+}
+
+TEST(FileOpsTest, ReadFileChecksumMismatchFails) {
+  TempDir tmp("checksum_mismatch");
+  const std::string contents = "mismatch";
+  std::ofstream(tmp.path / "mismatch.txt") << contents;
+
+  zurg::file_ops::Options opts{tmp.path.string()};
+  ops::v1::FileGetSpec spec;
+  spec.set_path("mismatch.txt");
+  auto expect = spec.mutable_expect();
+  expect->set_type(ops::v1::Checksum::SHA256);
+  expect->set_digest(Sha256("something different"));
+
+  zurg::file_ops::FileGetResult result;
+  ::grpc::Status s = zurg::file_ops::ReadFile(opts, spec, &result);
+  EXPECT_EQ(s.error_code(), ::grpc::StatusCode::ABORTED);
+}
+
 TEST(FileOpsTest, WriteFileChecksumMismatch) {
   TempDir tmp("checksum");
   zurg::file_ops::Options opts{tmp.path.string()};
@@ -138,6 +171,24 @@ TEST(FileOpsTest, WriteFileRejectsPathsOutsideRoot) {
   EXPECT_EQ(s.error_code(), ::grpc::StatusCode::PERMISSION_DENIED);
 }
 
+TEST(FileOpsTest, WriteFileFailsWhenParentIsFile) {
+  TempDir tmp("locked");
+  zurg::file_ops::Options opts{tmp.path.string()};
+
+  std::ofstream(tmp.path / "existing") << "file";
+
+  std::vector<ops::v1::FileChunk> chunks(1);
+  chunks[0].set_offset(0);
+  chunks[0].set_data("payload");
+
+  ops::v1::Checksum checksum;
+  checksum.set_type(ops::v1::Checksum::SHA256);
+  checksum.set_digest(Sha256("payload"));
+
+  ::grpc::Status s = zurg::file_ops::WriteFile(opts, "existing/child.bin", chunks, checksum, 0644);
+  EXPECT_EQ(s.error_code(), ::grpc::StatusCode::PERMISSION_DENIED);
+}
+
 TEST(FileOpsTest, WriteFileSuccessCreatesFile) {
   TempDir tmp("success");
   zurg::file_ops::Options opts{tmp.path.string()};
@@ -156,6 +207,62 @@ TEST(FileOpsTest, WriteFileSuccessCreatesFile) {
   std::ifstream in(tmp.path / "created.bin");
   std::string loaded((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   EXPECT_EQ(loaded, contents);
+}
+
+TEST(FileOpsTest, RemoveFileSuccess) {
+  TempDir tmp("remove_success");
+  std::ofstream(tmp.path / "gone.txt") << "data";
+  zurg::file_ops::Options opts{tmp.path.string()};
+  ::grpc::Status s = zurg::file_ops::RemoveFile(opts, "gone.txt");
+  EXPECT_TRUE(s.ok());
+  EXPECT_FALSE(fs::exists(tmp.path / "gone.txt"));
+}
+
+TEST(FileOpsTest, StreamFileCancelledDuringLoop) {
+  TempDir tmp("stream_cancel_loop");
+  std::string data(70 * 1024, 'x');
+  std::ofstream(tmp.path / "big.bin") << data;
+
+  zurg::file_ops::Options opts{tmp.path.string()};
+  ops::v1::FileGetSpec spec;
+  spec.set_path("big.bin");
+
+  int call = 0;
+  auto should_stop = [&]() {
+    return ++call >= 2;  // cancel on second loop iteration
+  };
+
+  int chunks = 0;
+  auto consumer = [&](ops::v1::FileChunk chunk) -> ::grpc::Status {
+    ++chunks;
+    return ::grpc::Status::OK;
+  };
+  ops::v1::FileGetEof eof;
+  ::grpc::Status s = zurg::file_ops::StreamFile(opts, spec, should_stop, consumer, &eof);
+  EXPECT_EQ(s.error_code(), ::grpc::StatusCode::CANCELLED);
+  EXPECT_GE(chunks, 1);
+}
+
+TEST(FileOpsTest, StreamFileCancelledAfterLoop) {
+  TempDir tmp("stream_cancel_after");
+  std::ofstream(tmp.path / "one.bin") << "1";
+
+  zurg::file_ops::Options opts{tmp.path.string()};
+  ops::v1::FileGetSpec spec;
+  spec.set_path("one.bin");
+
+  int call = 0;
+  auto should_stop = [&]() {
+    return ++call >= 2;  // allow first iteration, cancel after loop
+  };
+
+  auto consumer = [&](ops::v1::FileChunk) -> ::grpc::Status {
+    return ::grpc::Status::OK;
+  };
+  ops::v1::FileGetEof eof;
+  ::grpc::Status s = zurg::file_ops::StreamFile(opts, spec, should_stop, consumer, &eof);
+  EXPECT_EQ(s.error_code(), ::grpc::StatusCode::CANCELLED);
+  EXPECT_EQ(call, 2);
 }
 
 TEST(FileOpsTest, RemoveFileRejectsDirectory) {
