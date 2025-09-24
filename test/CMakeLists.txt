@@ -114,8 +114,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/source/smoke.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/file_ops_unit.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/pcap_ops_test.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/agent_callback_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/logger_manager_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/callback_agent_integration_test.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/file_ops.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/logger_manager.cpp
@@ -123,6 +123,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${OS_PROTO_SRC}
   ${OS_GRPC_PROTO_SRC}
 )
+target_compile_definitions(${PROJECT_NAME} PRIVATE GRPC_CALLBACK_API_NONEXPERIMENTAL=1)
 target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf fmt::fmt OpenSSL::Crypto)
 if(spdlog_FOUND)
   target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog_header_only)

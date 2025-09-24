@@ -157,3 +157,13 @@
 | CTL-006 | `Shutdown(drain=true)` 时平滑退出          | 设置 drain 标志：允许当前任务完成并清空队列后关闭流；`drain=false` 则立即取消所有任务。
 
 > 注：需求 CTL-003 要求“并发 >=5”指的是 Agent 能在短时间内接受多个 `StartOp`，并保证响应按 op_id 匹配。本文设计通过**快速 Ack + 串行执行器**满足互斥约束的同时保持协议并发性，必要时可扩展为多执行器以提高吞吐量。
+
+---
+
+## 当前进度 & 后续事项（2025-09-24）
+
+- ✅ `ControlCallbackClient` 已完成，串行任务队列、取消、Shutdown 逻辑在现有单元测试中得到验证。
+- ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetLoggerSinkForTests` 捕获。
+- ⚠️ gRPC 版本仍为 1.51.x，缺少稳定的 Callback Server 注册接口。当前新增的集成测试 `CallbackAgentIntegrationTest.DISABLED_HandlesPcapStartAndShutdown` 默认禁用，仅保留示例代码；待升级到 gRPC ≥1.56 并统一 `GRPC_CALLBACK_API_NONEXPERIMENTAL` 后再启用。
+- 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
+- ⏭️ 下一步：升级 gRPC（本地 & CI），启用 callback 服务端后重构 mock server，恢复并扩展端到端测试覆盖。
