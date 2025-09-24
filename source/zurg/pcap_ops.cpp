@@ -91,6 +91,8 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
     return GenerateSynthetic(spec, on_packet, stats, should_stop);
   }
 
+  // GCOVR_EXCL_START: Real interface capture requires system resources and is
+  // exercised in integration environments rather than unit tests.
   const int snaplen = spec.snaplen() > 0 ? static_cast<int>(spec.snaplen()) : 65535;
   const int promisc = spec.promisc() ? 1 : 0;
   const uint32_t trim = spec.payload_trim_bytes();
@@ -203,6 +205,7 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
   }
 
   return ::grpc::Status::OK;
+  // GCOVR_EXCL_STOP
 }
 
 ::grpc::Status GenerateCapture(const ops::v1::PcapSpec& spec,
