@@ -179,7 +179,7 @@ struct PendingTask {
 
 class ControlCallbackClient;
 
-class ControlStreamReactor : public grpc::experimental::ClientBidiReactor<ops::v1::AgentToServer, ops::v1::ServerToAgent> {
+class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServer, ops::v1::ServerToAgent> {
  public:
   ControlStreamReactor(ControlCallbackClient* parent,
                        ops::v1::Control::StubInterface* stub,
