@@ -31,7 +31,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential ninja-build cmake pkg-config \
-            libprotobuf-dev protobuf-compiler protobuf-compiler-grpc libgrpc++-dev libpcap-dev libssl-dev libfmt-dev gcovr
+            libprotobuf-dev protobuf-compiler protobuf-compiler-grpc libgrpc++-dev libpcap-dev libssl-dev libfmt-dev gcovr \
+            libgtest-dev
+
+      - name: Build googletest
+        run: |
+          sudo cmake -S /usr/src/googletest -B /tmp/googletest-build
+          sudo cmake --build /tmp/googletest-build
+          sudo cmake --install /tmp/googletest-build
 
       - name: Configure project
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -40,7 +47,7 @@ jobs:
         run: cmake --build build
 
       - name: Configure tests
-        run: cmake -S test -B test/build -DGTest_ROOT=${{ github.workspace }}/local/gtest -DENABLE_TEST_COVERAGE=1 -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S test -B test/build -DENABLE_TEST_COVERAGE=1 -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build tests
         run: cmake --build test/build
@@ -60,7 +67,6 @@ jobs:
             --exclude 'third_party/.*' \
             --exclude 'build/.*/.*' \
             --exclude 'test/build/generated/.*' \
-            --exclude 'local/gtest/.*' \
             --exclude 'standalone/.*' \
             --exclude 'test/source/.*' \
             --fail-under-line 90
