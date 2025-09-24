@@ -20,7 +20,32 @@ find_package(fmt REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GRPCPP REQUIRED grpc++)
-pkg_check_modules(PCAP REQUIRED libpcap)
+pkg_check_modules(PCAP libpcap)
+
+if(PCAP_FOUND)
+  set(PCAP_LIBRARIES ${PCAP_LIBRARIES})
+  set(PCAP_INCLUDE_DIRS ${PCAP_INCLUDE_DIRS})
+  set(PCAP_CFLAGS_OTHER ${PCAP_CFLAGS_OTHER})
+else()
+  find_path(PCAP_INCLUDE_DIR pcap.h
+    HINTS
+      /usr/include
+      /usr/local/include
+      /opt/homebrew/include
+  )
+  find_library(PCAP_LIBRARY pcap
+    HINTS
+      /usr/lib
+      /usr/local/lib
+      /opt/homebrew/lib
+  )
+  if(NOT PCAP_INCLUDE_DIR OR NOT PCAP_LIBRARY)
+    message(FATAL_ERROR "libpcap headers or libraries not found; install libpcap-dev / brew install libpcap")
+  endif()
+  set(PCAP_LIBRARIES ${PCAP_LIBRARY})
+  set(PCAP_INCLUDE_DIRS ${PCAP_INCLUDE_DIR})
+  set(PCAP_CFLAGS_OTHER "")
+endif()
 
 find_package(spdlog CONFIG QUIET)
 if(NOT spdlog_FOUND)
@@ -43,13 +68,24 @@ set(GENERATED_PROTO_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(OS_PROTO ${PROTO_ROOT}/os.proto)
 set(OS_PROTO_SRC ${GENERATED_PROTO_DIR}/os.pb.cc)
 set(OS_PROTO_HDR ${GENERATED_PROTO_DIR}/os.pb.h)
+set(OS_GRPC_PROTO_SRC ${GENERATED_PROTO_DIR}/os.grpc.pb.cc)
+set(OS_GRPC_PROTO_HDR ${GENERATED_PROTO_DIR}/os.grpc.pb.h)
+
+find_program(GRPC_CPP_PLUGIN_EXECUTABLE NAMES grpc_cpp_plugin
+  HINTS /usr/bin /usr/local/bin /opt/homebrew/bin)
+if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
+  message(FATAL_ERROR "grpc_cpp_plugin not found; install protobuf-compiler-grpc 或 brew install grpc")
+endif()
 
 file(MAKE_DIRECTORY ${GENERATED_PROTO_DIR})
 
 add_custom_command(
-  OUTPUT ${OS_PROTO_SRC} ${OS_PROTO_HDR}
+  OUTPUT ${OS_PROTO_SRC} ${OS_PROTO_HDR} ${OS_GRPC_PROTO_SRC} ${OS_GRPC_PROTO_HDR}
   COMMAND ${Protobuf_PROTOC_EXECUTABLE}
-  ARGS --cpp_out=${GENERATED_PROTO_DIR} -I ${PROTO_ROOT} ${OS_PROTO}
+  ARGS --cpp_out=${GENERATED_PROTO_DIR}
+       --grpc_out=${GENERATED_PROTO_DIR}
+       --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
+       -I ${PROTO_ROOT} ${OS_PROTO}
   DEPENDS ${OS_PROTO}
   COMMENT "Generating test C++ sources from os.proto"
   VERBATIM
@@ -72,6 +108,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/logger_manager.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
   ${OS_PROTO_SRC}
+  ${OS_GRPC_PROTO_SRC}
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf fmt::fmt OpenSSL::Crypto)
 if(spdlog_FOUND)
