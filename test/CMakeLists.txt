@@ -22,16 +22,20 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GRPCPP REQUIRED grpc++)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
-find_path(SPDLOG_INCLUDE_DIR spdlog/spdlog.h
-  HINTS
-    ${CMAKE_CURRENT_LIST_DIR}/../build/_deps/spdlog-src/include
-    ${CMAKE_CURRENT_LIST_DIR}/../build-debug/_deps/spdlog-src/include
-    ${CMAKE_CURRENT_LIST_DIR}/../build-standalone/_deps/spdlog-src/include
-    ${CMAKE_CURRENT_LIST_DIR}/../third_party/spdlog/include
-)
-
-if(NOT SPDLOG_INCLUDE_DIR)
-  message(FATAL_ERROR "spdlog headers not found; configure the main project first")
+find_package(spdlog CONFIG QUIET)
+if(NOT spdlog_FOUND)
+  find_path(SPDLOG_INCLUDE_DIR spdlog/spdlog.h
+    HINTS
+      ${CMAKE_CURRENT_LIST_DIR}/../build/_deps/spdlog-src/include
+      ${CMAKE_CURRENT_LIST_DIR}/../build-debug/_deps/spdlog-src/include
+      ${CMAKE_CURRENT_LIST_DIR}/../build-standalone/_deps/spdlog-src/include
+      ${CMAKE_CURRENT_LIST_DIR}/../third_party/spdlog/include
+      /usr/local/include
+      /usr/include
+  )
+  if(NOT SPDLOG_INCLUDE_DIR)
+    message(FATAL_ERROR "spdlog headers not found; install libspdlog-dev 或先配置顶层工程")
+  endif()
 endif()
 
 set(PROTO_ROOT ${CMAKE_CURRENT_LIST_DIR}/../third_party)
@@ -70,6 +74,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${OS_PROTO_SRC}
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf fmt::fmt OpenSSL::Crypto)
+if(spdlog_FOUND)
+  target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog_header_only)
+endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
 
 # 这里不设置上层 Greeter 目标的编译选项，避免依赖上层工程
@@ -92,10 +99,12 @@ target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent
   ${GENERATED_PROTO_DIR}
-  ${SPDLOG_INCLUDE_DIR}
   ${GRPCPP_INCLUDE_DIRS}
   ${PCAP_INCLUDE_DIRS}
 )
+if(NOT spdlog_FOUND)
+  target_include_directories(${PROJECT_NAME} PRIVATE ${SPDLOG_INCLUDE_DIR})
+endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${GRPCPP_LIBRARIES} ${PCAP_LIBRARIES})
 target_compile_options(${PROJECT_NAME} PRIVATE ${GRPCPP_CFLAGS_OTHER} ${PCAP_CFLAGS_OTHER})
 
