@@ -1,7 +1,9 @@
 #pragma once
 
 #ifndef GRPC_CALLBACK_API_NONEXPERIMENTAL
+#ifndef GRPC_CALLBACK_API_NONEXPERIMENTAL
 #define GRPC_CALLBACK_API_NONEXPERIMENTAL 1
+#endif
 #endif
 
 #include <grpcpp/grpcpp.h>

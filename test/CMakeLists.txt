@@ -18,8 +18,21 @@ find_package(GTest REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(fmt REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(gRPC CONFIG QUIET)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GRPCPP REQUIRED grpc++)
+set(GRPCPP_LINK_LIBS "")
+set(GRPCPP_INCLUDE_DIRS_RES "")
+set(GRPCPP_COMPILE_OPTS "")
+set(GRPCPP_LIBRARY_DIRS_RES "")
+if(gRPC_FOUND)
+  list(APPEND GRPCPP_LINK_LIBS gRPC::grpc++)
+else()
+  pkg_check_modules(GRPCPP REQUIRED grpc++)
+  list(APPEND GRPCPP_LINK_LIBS ${GRPCPP_LIBRARIES})
+  list(APPEND GRPCPP_INCLUDE_DIRS_RES ${GRPCPP_INCLUDE_DIRS})
+  list(APPEND GRPCPP_COMPILE_OPTS ${GRPCPP_CFLAGS_OTHER})
+  list(APPEND GRPCPP_LIBRARY_DIRS_RES ${GRPCPP_LIBRARY_DIRS})
+endif()
 pkg_check_modules(PCAP libpcap)
 
 if(PCAP_FOUND)
@@ -114,6 +127,10 @@ target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main pro
 if(spdlog_FOUND)
   target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog_header_only)
 endif()
+if(GRPCPP_LIBRARY_DIRS_RES)
+  target_link_directories(${PROJECT_NAME} PRIVATE ${GRPCPP_LIBRARY_DIRS_RES})
+endif()
+target_link_libraries(${PROJECT_NAME} PRIVATE ${GRPCPP_LINK_LIBS})
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
 
 # 这里不设置上层 Greeter 目标的编译选项，避免依赖上层工程
@@ -136,14 +153,14 @@ target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent
   ${GENERATED_PROTO_DIR}
-  ${GRPCPP_INCLUDE_DIRS}
+  ${GRPCPP_INCLUDE_DIRS_RES}
   ${PCAP_INCLUDE_DIRS}
 )
 if(NOT spdlog_FOUND)
   target_include_directories(${PROJECT_NAME} PRIVATE ${SPDLOG_INCLUDE_DIR})
 endif()
-target_link_libraries(${PROJECT_NAME} PRIVATE ${GRPCPP_LIBRARIES} ${PCAP_LIBRARIES})
-target_compile_options(${PROJECT_NAME} PRIVATE ${GRPCPP_CFLAGS_OTHER} ${PCAP_CFLAGS_OTHER})
+target_link_libraries(${PROJECT_NAME} PRIVATE ${PCAP_LIBRARIES})
+target_compile_options(${PROJECT_NAME} PRIVATE ${GRPCPP_COMPILE_OPTS} ${PCAP_CFLAGS_OTHER})
 
 # ---- code coverage ----
 
