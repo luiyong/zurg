@@ -104,10 +104,19 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
 
 }  // namespace
 
-::grpc::Status ReadFile(const Options& opts,
-                        const ops::v1::FileGetSpec& spec,
-                        FileGetResult* result) {
-  if (!result) return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing result");
+::grpc::Status StreamFile(const Options& opts,
+                          const ops::v1::FileGetSpec& spec,
+                          const ShouldStopFn& should_stop,
+                          const FileChunkConsumer& on_chunk,
+                          ops::v1::FileGetEof* eof) {
+  if (!on_chunk) {
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing chunk callback");
+  }
+  if (!eof) {
+    return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing eof");
+  }
+  eof->Clear();
+
   auto root = MakeRoot(opts.root_dir);
   if (!root) return ::grpc::Status(::grpc::StatusCode::FAILED_PRECONDITION, "invalid root directory");
   auto resolved = ResolvePath(*root, spec.path());
@@ -137,11 +146,12 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
     return ::grpc::Status(::grpc::StatusCode::INTERNAL, "sha init failed");  // GCOVR_EXCL_LINE
   }
 
-  result->chunks.clear();
-  result->eof.Clear();
   std::vector<char> buffer(64 * 1024);
   int64_t offset = start;
   while (remain > 0) {
+    if (should_stop && should_stop()) {
+      return ::grpc::Status(::grpc::StatusCode::CANCELLED, "operation cancelled");
+    }
     std::size_t to_read = static_cast<std::size_t>(std::min<int64_t>(remain, buffer.size()));
     in.read(buffer.data(), to_read);
     std::streamsize got = in.gcount();
@@ -150,24 +160,43 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
     ops::v1::FileChunk chunk;
     chunk.set_offset(offset);
     chunk.set_data(buffer.data(), static_cast<std::size_t>(got));
-    result->chunks.push_back(std::move(chunk));
     offset += got;
     remain -= got;
+    auto status = on_chunk(std::move(chunk));
+    if (!status.ok()) {
+      return status;
+    }
   }
+
+  if (should_stop && should_stop()) {
+    return ::grpc::Status(::grpc::StatusCode::CANCELLED, "operation cancelled");
+  }
+
+  auto computed = sha.Finalize();
   if (!spec.expect().digest().empty()) {
-    auto computed = sha.Finalize();
     if (spec.expect().type() != ops::v1::Checksum::SHA256 || spec.expect().digest() != computed) {
       return ::grpc::Status(::grpc::StatusCode::ABORTED, "checksum mismatch");
     }
-    result->eof.mutable_checksum()->CopyFrom(spec.expect());
+    eof->mutable_checksum()->CopyFrom(spec.expect());
   } else {
-    auto computed = sha.Finalize();
-    auto* checksum = result->eof.mutable_checksum();
+    auto* checksum = eof->mutable_checksum();
     checksum->set_type(ops::v1::Checksum::SHA256);
     checksum->set_digest(computed);
   }
-  result->eof.set_total_size(total_size);
+  eof->set_total_size(total_size);
   return ::grpc::Status::OK;
+}
+
+::grpc::Status ReadFile(const Options& opts,
+                        const ops::v1::FileGetSpec& spec,
+                        FileGetResult* result) {
+  if (!result) return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing result");
+  result->chunks.clear();
+  auto consumer = [&](ops::v1::FileChunk chunk) -> ::grpc::Status {
+    result->chunks.push_back(std::move(chunk));
+    return ::grpc::Status::OK;
+  };
+  return StreamFile(opts, spec, ShouldStopFn{}, consumer, &result->eof);
 }
 
 ::grpc::Status WriteFile(const Options& opts,
