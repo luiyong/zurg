@@ -143,3 +143,17 @@
 - 在文档或示例中说明如何启用 callback 客户端。
 - 检查日志与监控集成（可结合 `LoggerManager`）。
 
+---
+
+## 验收清单映射（ops_acceptance_checklist.xlsx）
+
+| ID      | 需求摘要                                   | 设计要点与保障措施 |
+|---------|-------------------------------------------|--------------------|
+| CTL-001 | Agent 连接后 2 秒内上报 `AgentHello`      | `ControlCallbackClient` 在 `OnWriteInit` 阶段立即发送 Hello，超时 watchdog 确保 `T_conn<=2s`。 |
+| CTL-002 | `StartOp` 下发后 500 ms 内回复 `OpAck`    | Ack 在入队前立刻发送，队列执行与否不影响 Ack 延迟。 |
+| CTL-003 | 同一流支持并发 ≥5 个操作、消息不混淆     | 队列接受任意数量的 `StartOp`，立即 Ack 并记录上下文；串行执行仅限制耗时操作并保持响应分组，响应通过 op_id 映射确保无交叉。 |
+| CTL-004 | 心跳保活，连续 3 次缺失则判离线          | 心跳处理独立于任务队列；`TaskDispatcher` 不阻塞 `OnReadDone`，miss 计数器触发离线逻辑。 |
+| CTL-005 | 重复 `StartOp` 识别并拒绝                 | 在任务表中缓存活跃/排队 op_id，重复请求直接发送 `OpAck(accepted=false)` 并记录原因。 |
+| CTL-006 | `Shutdown(drain=true)` 时平滑退出          | 设置 drain 标志：允许当前任务完成并清空队列后关闭流；`drain=false` 则立即取消所有任务。
+
+> 注：需求 CTL-003 要求“并发 >=5”指的是 Agent 能在短时间内接受多个 `StartOp`，并保证响应按 op_id 匹配。本文设计通过**快速 Ack + 串行执行器**满足互斥约束的同时保持协议并发性，必要时可扩展为多执行器以提高吞吐量。
