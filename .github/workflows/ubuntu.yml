@@ -68,7 +68,7 @@ jobs:
             --txt coverage/summary.txt \
             --xml coverage/coverage.xml \
             --html-details coverage/index.html \
-            --filter "${{ github.workspace }}/source/zurg" \
+            --filter ".*/source/zurg/.*" \
             --exclude 'third_party/.*' \
             --exclude 'build/.*/.*' \
             --exclude 'test/build/generated/.*' \
