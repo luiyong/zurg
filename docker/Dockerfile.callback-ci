@@ -1,0 +1,61 @@
+# Callback-friendly gRPC build environment
+# Base image provides modern gRPC (>=1.62) with callback API enabled.
+
+FROM ubuntu:24.04
+
+ARG GRPC_VERSION=v1.62.0
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      ninja-build \
+      pkg-config \
+      git \
+      curl \
+      ca-certificates \
+      autoconf \
+      libtool \
+      libssl-dev \
+      zlib1g-dev \
+      libpcap-dev \
+      libfmt-dev \
+      libspdlog-dev \
+      libgtest-dev \
+      python3 \
+      python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build and install googletest (system package only ships sources)
+RUN cmake -S /usr/src/googletest -B /tmp/googletest-build \
+      -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /tmp/googletest-build --target install --config Release -j"$(nproc)" && \
+    rm -rf /tmp/googletest-build
+
+# Fetch and build gRPC with bundled dependencies to ensure callback API support
+RUN git clone --depth 1 --branch ${GRPC_VERSION} https://github.com/grpc/grpc.git /tmp/grpc && \
+    cd /tmp/grpc && \
+    git submodule update --init --recursive && \
+    cmake -S . -B cmake/build \
+      -DgRPC_INSTALL=ON \
+      -DgRPC_BUILD_TESTS=OFF \
+      -DBUILD_SHARED_LIBS=ON \
+      -DgRPC_BUILD_CSHARP_EXT=OFF \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DgRPC_ABSL_PROVIDER=module \
+      -DgRPC_CARES_PROVIDER=module \
+      -DgRPC_PROTOBUF_PROVIDER=module \
+      -DgRPC_RE2_PROVIDER=module \
+      -DgRPC_SSL_PROVIDER=module \
+      -DgRPC_ZLIB_PROVIDER=package && \
+    cmake --build cmake/build --target install --config Release -j"$(nproc)" && \
+    ldconfig && \
+    rm -rf /tmp/grpc
+
+# Useful defaults for consumers
+ENV CC=/usr/bin/cc \
+    CXX=/usr/bin/c++ \
+    GRPC_CPP_PLUGIN=/usr/local/bin/grpc_cpp_plugin
+
+WORKDIR /workspace
