@@ -1,0 +1,62 @@
+name: Build CI Image
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - docker/ci.Dockerfile
+      - .github/workflows/ci-image.yml
+      - .github/workflows/ubuntu.yml
+      - .github/workflows/install.yml
+      - .github/workflows/style.yml
+      - .github/workflows/standalone.yml
+      - .github/workflows/documentation.yaml
+  pull_request:
+    paths:
+      - docker/ci.Dockerfile
+      - .github/workflows/ci-image.yml
+      - .github/workflows/ubuntu.yml
+      - .github/workflows/install.yml
+      - .github/workflows/style.yml
+      - .github/workflows/standalone.yml
+      - .github/workflows/documentation.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/zurg-ci
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/ci.Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

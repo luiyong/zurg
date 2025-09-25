@@ -10,6 +10,10 @@ on:
       - master
       - main
 
+permissions:
+  contents: read
+  packages: read
+
 env:
   CTEST_OUTPUT_ON_FAILURE: 1
   CPM_SOURCE_CACHE: ${{ github.workspace }}/cpm_modules
@@ -17,6 +21,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/zurg-ci:latest
 
     steps:
       - uses: actions/checkout@v3
@@ -25,16 +31,6 @@ jobs:
         with:
           path: "**/cpm_modules"
           key: ${{ github.workflow }}-cpm-modules-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config \
-            libprotobuf-dev protobuf-compiler protobuf-compiler-grpc libgrpc++-dev \
-            libpcap-dev libssl-dev libfmt-dev libspdlog-dev libgtest-dev
-          sudo cmake -S /usr/src/googletest -B /tmp/googletest-build
-          sudo cmake --build /tmp/googletest-build
-          sudo cmake --install /tmp/googletest-build
 
       - name: build and install library
         run: |
