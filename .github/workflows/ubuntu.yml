@@ -70,7 +70,6 @@ jobs:
             --html-details coverage/index.html \
             --filter ".*/source/zurg/.*" \
             --exclude 'third_party/.*' \
-            --exclude 'build/.*/.*' \
             --exclude 'test/build/generated/.*' \
             --exclude 'standalone/.*' \
             --exclude 'test/source/.*' \
