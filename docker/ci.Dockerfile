@@ -33,6 +33,9 @@ RUN cmake -S /usr/src/googletest -B /tmp/googletest-build \
     && cmake --install /tmp/googletest-build \
     && rm -rf /tmp/googletest-build
 
+RUN mkdir -p /home/runner \
+    && ln -s /__w /home/runner/work
+
 ENV PATH="/usr/local/bin:${PATH}"
 
 WORKDIR /workspace
