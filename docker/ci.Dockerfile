@@ -23,8 +23,10 @@ RUN apt-get update \
         libfmt-dev \
         libgtest-dev \
         libspdlog-dev \
-        gcovr \
     && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir gcovr==7.2
 
 RUN cmake -S /usr/src/googletest -B /tmp/googletest-build \
     && cmake --build /tmp/googletest-build \
