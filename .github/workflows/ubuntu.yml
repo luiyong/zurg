@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  packages: write
 
 env:
   CTEST_OUTPUT_ON_FAILURE: 1
@@ -20,10 +20,15 @@ env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/cpm_modules
 
 jobs:
+  ci-image:
+    uses: ./.github/workflows/ci-image.yml
+    secrets: inherit
+
   build:
+    needs: ci-image
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/${{ github.repository_owner }}/zurg-ci:latest
+      image: ${{ needs.ci-image.outputs.image }}
 
     steps:
       - uses: actions/checkout@v3

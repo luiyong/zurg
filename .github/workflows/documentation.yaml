@@ -10,15 +10,20 @@ env:
 
 permissions:
   contents: write
-  packages: read
+  packages: write
 
 
 jobs:
+  ci-image:
+    uses: ./.github/workflows/ci-image.yml
+    secrets: inherit
+
   build:
+    needs: ci-image
     name: Build and publish documentation
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/${{ github.repository_owner }}/zurg-ci:latest
+      image: ${{ needs.ci-image.outputs.image }}
     steps:
       - uses: actions/checkout@v3
 
