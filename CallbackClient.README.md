@@ -167,3 +167,19 @@
 - ⚠️ gRPC 版本仍为 1.51.x，缺少稳定的 Callback Server 注册接口。当前新增的集成测试 `CallbackAgentIntegrationTest.DISABLED_HandlesPcapStartAndShutdown` 默认禁用，仅保留示例代码；待升级到 gRPC ≥1.56 并统一 `GRPC_CALLBACK_API_NONEXPERIMENTAL` 后再启用。
 - 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
 - ⏭️ 下一步：升级 gRPC（本地 & CI），启用 callback 服务端后重构 mock server，恢复并扩展端到端测试覆盖。
+
+### 推荐容器环境
+
+- 新增 `docker/Dockerfile.callback-ci`，基于 `ubuntu:24.04` 构建并安装 gRPC `${GRPC_VERSION}`（默认为 v1.62.0）、google-test、spdlog 等依赖，默认已满足 Callback API 需求。
+- 构建镜像：
+  ```bash
+  docker build -t ghcr.io/<owner>/zurg-callback-ci -f docker/Dockerfile.callback-ci .
+  ```
+- 推送后可在 GitHub Actions 中直接使用：
+  ```yaml
+  jobs:
+    build:
+      runs-on: ubuntu-latest
+      container:
+        image: ghcr.io/<owner>/zurg-callback-ci:latest
+  ```
