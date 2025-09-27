@@ -188,6 +188,7 @@ class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServ
   void Begin();
   grpc::Status Wait();
   void InjectMessage(const ops::v1::ServerToAgent& msg);
+  void TryCancel() { context_->TryCancel(); }
 
   void OnReadDone(bool ok) override;
   void OnWriteDone(bool ok) override;
@@ -280,14 +281,20 @@ class ControlCallbackClient {
   }
 
   void OnStreamReady(ControlStreamReactor* reactor) {
-    std::lock_guard<std::mutex> lock(mu_);
-    reactor_ = reactor;
-    pending_writes_.push_back(internal::MakeHello(agent_id_));
-    MaybeStartWriteLocked();
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      reactor_ = reactor;
+    }
+    EnqueueWrite(internal::MakeHello(agent_id_));
   }
 
   void OnWriteFinished(bool ok) {
     std::lock_guard<std::mutex> lock(mu_);
+    if (logger_) {
+      logger_->debug("write finished ok={} queue={} in_flight_before={} pending={} current={}", ok,
+                     task_queue_.size(), write_in_flight_, pending_writes_.size(),
+                     current_write_ ? current_write_->msg_case() : 0);
+    }
     write_in_flight_ = false;
     current_write_.reset();
     if (!ok) {
@@ -332,6 +339,10 @@ class ControlCallbackClient {
     if (!reactor_ || write_in_flight_ || pending_writes_.empty()) return;
     current_write_.emplace(std::move(pending_writes_.front()));
     pending_writes_.pop_front();
+    if (logger_) {
+      logger_->debug("start write msg_case={} remaining={}",
+                     current_write_->msg_case(), pending_writes_.size());
+    }
     write_in_flight_ = true;
     reactor_->StartWrite(&*current_write_);
   }
@@ -494,13 +505,30 @@ class ControlCallbackClient {
 
   void HandleShutdown(const ops::v1::Shutdown& shutdown) {
     const bool drain = shutdown.drain();
+    ControlStreamReactor* reactor_to_cancel = nullptr;
     {
       std::lock_guard<std::mutex> lock(mu_);
       drain_mode_ = drain;
       logger_->info("received shutdown request drain={} queue_size={}", drain, task_queue_.size());
       if (!drain) {
-        CancelAllLocked("shutdown");
+        if (current_task_) {
+          current_task_->cancelled.store(true);
+        }
+        for (auto& task : task_queue_) {
+          task->cancelled.store(true);
+        }
+        task_queue_.clear();
+        for (auto& entry : tasks_) {
+          if (auto ptr = entry.second.lock()) {
+            ptr->cancelled.store(true);
+          }
+        }
+        tasks_.clear();
+        reactor_to_cancel = reactor_;
       }
+    }
+    if (reactor_to_cancel) {
+      reactor_to_cancel->TryCancel();
     }
     if (!drain) {
       running_.store(false);
@@ -516,17 +544,21 @@ class ControlCallbackClient {
     for (auto& entry : tasks_) {
       if (auto ptr = entry.second.lock()) {
         ptr->cancelled.store(true);
-        ops::v1::AgentToServer msg;
-        auto* err = msg.mutable_error();
-        err->set_op_id(ptr->op_id);
-        err->set_code("CANCELLED");
-        err->set_message(std::string(reason));
-        pending_writes_.push_back(std::move(msg));
+        if (reactor_) {
+          ops::v1::AgentToServer msg;
+          auto* err = msg.mutable_error();
+          err->set_op_id(ptr->op_id);
+          err->set_code("CANCELLED");
+          err->set_message(std::string(reason));
+          pending_writes_.push_back(std::move(msg));
+        }
       }
     }
     tasks_.clear();
     task_queue_.clear();
-    MaybeStartWriteLocked();
+    if (reactor_) {
+      MaybeStartWriteLocked();
+    }
   }
 
   bool ShouldStop(const std::shared_ptr<PendingTask>& task) const {
@@ -653,9 +685,9 @@ ControlStreamReactor::ControlStreamReactor(ControlCallbackClient* parent,
 }
 
 void ControlStreamReactor::Begin() {
+  StartCall();
   parent_->OnStreamReady(this);
   StartRead(&incoming_);
-  StartCall();
 }
 
 grpc::Status ControlStreamReactor::Wait() {

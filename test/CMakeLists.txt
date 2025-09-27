@@ -15,7 +15,8 @@ option(TEST_INSTALLED_VERSION "Test the version found by find_package" OFF)
 
 # 使用系统安装的 GoogleTest（建议通过包管理器安装）
 find_package(GTest REQUIRED)
-find_package(Protobuf REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(fmt REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(gRPC CONFIG QUIET)
@@ -99,6 +100,8 @@ add_custom_command(
        --grpc_out=${GENERATED_PROTO_DIR}
        --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
        -I ${PROTO_ROOT} ${OS_PROTO}
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/../cmake/fix_grpc_namespace.py
+          ${OS_GRPC_PROTO_SRC} ${OS_GRPC_PROTO_HDR}
   DEPENDS ${OS_PROTO}
   COMMENT "Generating test C++ sources from os.proto"
   VERBATIM
