@@ -16,6 +16,16 @@ option(TEST_INSTALLED_VERSION "Test the version found by find_package" OFF)
 # 使用系统安装的 GoogleTest（建议通过包管理器安装）
 find_package(GTest REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
+if (NOT Protobuf_PROTOC_EXECUTABLE AND TARGET protobuf::protoc)
+  get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION)
+  if (NOT _PROTOC_LOCATION)
+    get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION_RELEASE)
+  endif()
+  if (NOT _PROTOC_LOCATION)
+    get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION_DEBUG)
+  endif()
+  set(Protobuf_PROTOC_EXECUTABLE ${_PROTOC_LOCATION})
+endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(fmt REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -115,13 +125,16 @@ set(sources
 add_executable(${PROJECT_NAME} ${sources})
 target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/source/smoke.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/file_ops_unit.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/pcap_ops_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/logger_manager_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/log_ops_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/callback_agent_integration_test.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/file_ops.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/log_ops.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/logger_manager.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/task.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/log_filter_task.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/pcap_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
   ${OS_PROTO_SRC}
   ${OS_GRPC_PROTO_SRC}

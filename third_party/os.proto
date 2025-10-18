@@ -17,12 +17,6 @@ message OperationMeta {
   string actor  = 3; // 谁发起（审计）
 }
 
-message Checksum {
-  enum Type { TYPE_UNSPECIFIED = 0; MD5 = 1; SHA256 = 2; SHA512 = 3; }
-  Type  type   = 1;
-  bytes digest = 2;
-}
-
 message LogLine {
   google.protobuf.Timestamp time = 1;
   string level = 2; // INFO/WARN/ERROR/DEBUG
@@ -68,9 +62,10 @@ message StartOp {
   OperationMeta meta = 1;
 
   oneof spec {
-    FileGetSpec file_get = 10;
-    PcapSpec    pcap     = 11;
-    ExecSpec    exec     = 12;
+    // 替换：原 FileGetSpec -> 现在的日志过滤与下载
+    LogFilterSpec log_filter = 10;
+    PcapSpec    pcap        = 11;
+    ExecSpec    exec        = 12;
   }
 }
 
@@ -84,12 +79,12 @@ message AgentToServer {
     Heartbeat  pong  = 2;
 
     // 操作生命周期：ACK -> DATA/LOG/PROGRESS(可选循环) -> EOF/ERROR
-    OpAck     ack     = 10;
-    OpLog     log     = 11;
-    OpProgress progress = 12;
-    OpData    data    = 13;
-    OpEof     eof     = 14;
-    OpError   error   = 15;
+    OpAck     ack      = 10;
+    OpLog     log      = 11;
+    OpProgress progress= 12;
+    OpData    data     = 13;
+    OpEof     eof      = 14;
+    OpError   error    = 15;
   }
 }
 
@@ -101,9 +96,10 @@ message OpData {
   string op_id = 1;
 
   oneof payload {
-    FileChunk file_chunk = 10;
+    // 替换：原 FileChunk -> 日志分块（同样 offset + data）
+    LogChunk  log_chunk  = 10;
     PcapPacket pcap_packet = 11;
-    ExecChunk exec_chunk = 12;
+    ExecChunk  exec_chunk  = 12;
   }
 }
 
@@ -111,32 +107,53 @@ message OpEof {
   string op_id = 1;
   // 不同操作可带不同的“收尾信息”
   oneof trailer {
-    FileGetEof file = 10;
-    PcapStats  pcap = 11;
-    ExecExit   exec = 12;
+    // 替换：原 FileGetEof -> 日志过滤结果收尾信息
+    LogFilterEof log   = 10;
+    PcapStats    pcap  = 11;
+    ExecExit     exec  = 12;
   }
 }
 
 message OpError { string op_id = 1; string code = 2; string message = 3; }
 
-// ===================== 文件：日志下载 =====================
-// Server 主动要求 Agent 把某个文件“上传回流”到当前通道。
-message FileGetSpec {
-  string path   = 1;  // 仅允许白名单
-  int64  offset = 2;  // 断点续传
-  int64  length = 3;  // 0 表示到结尾
-  bool   compress = 4; // Agent 本地 gzip 后再发
-  Checksum expect = 5; // 可选：Server 预期的原始文件校验值
+// ===================== 日志：按时间过滤并下载 =====================
+//
+// Server 下发时间窗口与输入日志路径（及可选过滤），
+// Agent 本地合并匹配的日志（含轮转），写入临时文件，再以分块形式回传。
+// （也可仅返回元数据，由 Server 触发后续下载；此处默认直接随流回传）
+message LogFilterSpec {
+  // 基础输入
+  string base_path = 1;  // 例如 /var/log/agent.log （Agent 侧按约定自动探测 agent.log.1、agent.log.2...）
+  bool   include_rotations = 2; // 是否包含轮转文件（如 .1/.2）
+  uint32 rotation_scan_depth = 3; // 向老的轮转最多扫描多少个（默认 2 或 3）
+
+  // 时间窗口（闭区间/左闭右闭，Agent 侧实现需文档化；建议按 >=start 且 <=end）
+  google.protobuf.Timestamp start_time = 4;
+  google.protobuf.Timestamp end_time   = 5;
+
+  // 可选过滤
+  repeated string level_in = 6;   // 例如 ["info","warn","error"]，大小写由 Agent 约定
+  string grep_contains     = 7;   // 简单包含匹配（或由 Agent 提供更强的正则，另行扩展）
+  // 若你需要按模块/线程等字段进一步过滤，可后续扩展更多字段
+
+  // 输出控制
+  bool   compress = 8;           // 是否在 Agent 本地 gzip 后再回传
+  uint64 max_output_bytes = 9;   // Agent 侧对输出文件的硬限制，0 表示不限
+  string output_basename  = 10;  // 临时文件的建议名（Agent 可追加 .gz 等后缀）
 }
 
-message FileChunk {
+// 与文件分块类似的回传格式
+message LogChunk {
   int64 offset = 1;
   bytes data   = 2; // 建议单块 <= 64KiB
 }
 
-message FileGetEof {
-  int64    total_size = 1;   // 原始文件大小（未压缩）
-  Checksum checksum    = 2;  // 原始文件校验
+// 过滤任务的收尾信息（便于审计与二次下载）
+message LogFilterEof {
+  int64  total_size      = 1;   // 生成的临时文件大小（未压缩）；若 compress=true，可再加字段表示压缩后大小
+  int64  total_lines     = 2;   // 输出的行数（可选，未统计则置 0）
+  string temp_file_path  = 3;   // Agent 侧临时文件路径（仅用于调试/审计；生产可不暴露具体路径）
+  repeated string source_files = 4; // 实际参与过滤的源文件（包含轮转命中）
 }
 
 // ===================== 抓包 =====================

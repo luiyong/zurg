@@ -1,0 +1,83 @@
+name: Build CI Image
+
+on:
+  workflow_call:
+    outputs:
+      image:
+        description: Fully qualified reference for the container image to use in subsequent jobs
+        value: ${{ jobs.build.outputs.image }}
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-ref.outputs.value }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Decide publishing strategy
+        id: publish
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/zurg-ci"
+          SHA_TAG="$IMAGE:${{ github.sha }}"
+          LATEST_TAG="$IMAGE:latest"
+          EVENT="${{ github.event_name }}"
+          REF="${{ github.ref }}"
+          IS_FORK=$(jq -r '.pull_request.head.repo.fork // false' "$GITHUB_EVENT_PATH")
+
+          PUSH_IMAGE=true
+          PUSH_LATEST=false
+
+          if [ "$EVENT" = "pull_request" ] && [ "$IS_FORK" = "true" ]; then
+            PUSH_IMAGE=false
+          fi
+
+          if [ "$EVENT" = "push" ] && { [ "$REF" = "refs/heads/master" ] || [ "$REF" = "refs/heads/main" ]; }; then
+            PUSH_LATEST=true
+          fi
+
+          if [ "$PUSH_IMAGE" = "true" ]; then
+            IMAGE_TO_USE="$SHA_TAG"
+          else
+            IMAGE_TO_USE="$LATEST_TAG"
+          fi
+
+          {
+            echo "image=$IMAGE"
+            echo "sha_tag=$SHA_TAG"
+            echo "latest_tag=$LATEST_TAG"
+            echo "push=$PUSH_IMAGE"
+            echo "push_latest=$PUSH_LATEST"
+            echo "resolved_tag=$IMAGE_TO_USE"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: ${{ steps.publish.outputs.push == 'true' || steps.publish.outputs.push_latest == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/ci.Dockerfile
+          push: ${{ steps.publish.outputs.push == 'true' || steps.publish.outputs.push_latest == 'true' }}
+          tags: |
+            ${{ steps.publish.outputs.sha_tag }}
+            ${{ (steps.publish.outputs.push_latest == 'true') && steps.publish.outputs.latest_tag || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Expose image reference
+        id: image-ref
+        run: echo "value=${{ steps.publish.outputs.resolved_tag }}" >>"$GITHUB_OUTPUT"

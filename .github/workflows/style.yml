@@ -10,12 +10,23 @@ on:
       - master
       - main
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/cpm_modules
 
 jobs:
+  ci-image:
+    uses: ./.github/workflows/ci-image.yml
+    secrets: inherit
+
   build:
+    needs: ci-image
     runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.ci-image.outputs.image }}
 
     steps:
       - uses: actions/checkout@v3
@@ -27,11 +38,6 @@ jobs:
 
       - name: Install format dependencies
         run: pip3 install clang-format==14.0.6 cmake_format==0.6.11 pyyaml
-
-      - name: Install test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config libprotobuf-dev protobuf-compiler protobuf-compiler-grpc libgrpc++-dev libpcap-dev libssl-dev libfmt-dev
 
       - name: configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

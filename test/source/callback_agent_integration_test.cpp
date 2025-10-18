@@ -6,10 +6,13 @@
 
 #include "os.grpc.pb.h"
 #include "zurg/logger_manager.h"
+#include <google/protobuf/util/time_util.h>
 
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -47,7 +50,7 @@ class MockControlService : public ops::v1::Control::CallbackService {
     return data->messages;
   }
 
-  bool SendStartOp(const std::string& op_id, const ops::v1::PcapSpec& spec) {
+  bool SendPcapStart(const std::string& op_id, const ops::v1::PcapSpec& spec) {
     std::lock_guard<std::mutex> lock(mu_);
     if (!reactor_) return false;
     ops::v1::ServerToAgent msg;
@@ -58,12 +61,32 @@ class MockControlService : public ops::v1::Control::CallbackService {
     return true;
   }
 
+  bool SendLogFilterStart(const std::string& op_id, const ops::v1::LogFilterSpec& spec) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!reactor_) return false;
+    ops::v1::ServerToAgent msg;
+    auto* start = msg.mutable_start();
+    start->mutable_meta()->set_op_id(op_id);
+    start->mutable_log_filter()->CopyFrom(spec);
+    reactor_->EnqueueMessage(std::move(msg));
+    return true;
+  }
+
   bool SendShutdown(bool drain) {
     std::lock_guard<std::mutex> lock(mu_);
     if (!reactor_) return false;
     ops::v1::ServerToAgent msg;
     msg.mutable_shutdown()->set_drain(drain);
     reactor_->EnqueueMessage(std::move(msg), !drain);
+    return true;
+  }
+
+  bool SendCancel(const std::string& op_id) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!reactor_) return false;
+    ops::v1::ServerToAgent msg;
+    msg.mutable_cancel()->set_op_id(op_id);
+    reactor_->EnqueueMessage(std::move(msg));
     return true;
   }
 
@@ -208,6 +231,16 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     sink_ = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(128);
     zurg::agent::internal::SetLoggerSinkForTests(sink_);
 
+    namespace fs = std::filesystem;
+    auto base_tmp = fs::temp_directory_path();
+    log_dir_ = base_tmp / fs::path("zurg-logfilter-test") /
+               fs::path(std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(log_dir_);
+    zurg::log_ops::Options log_opts;
+    log_opts.log_root = log_dir_.string();
+    log_opts.temp_dir = log_dir_.string();
+    zurg::agent::internal::SetLogOptionsForTests(std::move(log_opts));
+
     grpc::ServerBuilder builder;
     builder.RegisterService(&service_);
     builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
@@ -229,6 +262,10 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     zurg::agent::internal::SetLoggerSinkForTests(nullptr);
     zurg::agent::internal::SetSendHookForTests(nullptr);
     zurg::logging::LoggerManager::shutdown();
+    if (!log_dir_.empty()) {
+      std::error_code ec;
+      std::filesystem::remove_all(log_dir_, ec);
+    }
   }
 
   void StartAgentThread(const std::string& agent_id = "agent-test") {
@@ -241,9 +278,10 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
   int port_ = 0;
   std::thread agent_thread_;
   std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> sink_;
+  std::filesystem::path log_dir_;
 };
 
-TEST_F(CallbackAgentIntegrationTest, HandlesPcapStartAndShutdown) {
+TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
   std::vector<ops::v1::AgentToServer> sent;
   std::mutex sent_mu;
   zurg::agent::internal::SetSendHookForTests([&](const ops::v1::AgentToServer& msg) {
@@ -259,30 +297,62 @@ TEST_F(CallbackAgentIntegrationTest, HandlesPcapStartAndShutdown) {
   ASSERT_GE(messages.size(), 1u);
   EXPECT_EQ(messages[0].msg_case(), ops::v1::AgentToServer::kHello);
 
-  ops::v1::PcapSpec spec;
-  spec.set_packet_limit(2);
-  spec.set_payload_trim_bytes(4);
-  ASSERT_TRUE(service_.SendStartOp("op1", spec));
+  namespace fs = std::filesystem;
+  fs::path base_log = log_dir_ / "agent.log";
+  {
+    std::ofstream os(base_log);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.callback] [info] keep-1" << std::endl;
+    os << "[2025-09-27 11:05:00.000] [agent.callback] [error] drop-1" << std::endl;
+  }
+  fs::path rotated_log = log_dir_ / "agent.log.1";
+  {
+    std::ofstream os(rotated_log);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 10:50:00.000] [agent.callback] [info] old-line" << std::endl;
+  }
 
-  ASSERT_TRUE(service_.WaitForMessages(5, 2000ms));
+  ops::v1::LogFilterSpec spec;
+  spec.set_base_path(base_log.string());
+  spec.set_include_rotations(true);
+  spec.set_rotation_scan_depth(1);
+  spec.add_level_in("info");
+  spec.set_grep_contains("keep");
+  spec.set_output_basename("filtered");
+  google::protobuf::Timestamp start_time;
+  google::protobuf::Timestamp end_time;
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T10:55:00Z", &start_time));
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T11:10:00Z", &end_time));
+  *spec.mutable_start_time() = start_time;
+  *spec.mutable_end_time() = end_time;
+
+  ASSERT_TRUE(service_.SendLogFilterStart("op1", spec));
+
+  ASSERT_TRUE(service_.WaitForMessages(4, 2000ms));
   messages = service_.SnapshotMessages();
-  ASSERT_GE(messages.size(), 5u);
+  ASSERT_GE(messages.size(), 4u);
   EXPECT_EQ(messages[1].msg_case(), ops::v1::AgentToServer::kAck);
   EXPECT_TRUE(messages[1].ack().accepted());
   EXPECT_EQ(messages[1].ack().op_id(), "op1");
 
   bool saw_data = false;
   bool saw_eof = false;
+  std::string concatenated;
   for (const auto& msg : messages) {
-    if (msg.msg_case() == ops::v1::AgentToServer::kData && msg.data().has_pcap_packet()) {
+    if (msg.msg_case() == ops::v1::AgentToServer::kData && msg.data().has_log_chunk()) {
       saw_data = true;
+      concatenated.append(msg.data().log_chunk().data());
     }
-    if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().has_pcap()) {
+    if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().has_log()) {
       saw_eof = true;
+      EXPECT_EQ(msg.eof().log().total_lines(), 1);
+      EXPECT_GE(msg.eof().log().total_size(), 0);
     }
   }
   EXPECT_TRUE(saw_data);
   EXPECT_TRUE(saw_eof);
+  EXPECT_NE(concatenated.find("keep-1"), std::string::npos);
+  EXPECT_EQ(concatenated.find("old-line"), std::string::npos);
 
   ASSERT_TRUE(service_.SendShutdown(false));
   ASSERT_TRUE(service_.WaitForDone(2000ms));
@@ -311,6 +381,136 @@ TEST_F(CallbackAgentIntegrationTest, HandlesPcapStartAndShutdown) {
     }
   }
   EXPECT_TRUE(found_logger);
+}
+
+TEST_F(CallbackAgentIntegrationTest, CancelsLogTask) {
+  std::vector<ops::v1::AgentToServer> sent;
+  std::mutex sent_mu;
+  zurg::agent::internal::SetSendHookForTests([&](const ops::v1::AgentToServer& msg) {
+    std::lock_guard<std::mutex> lock(sent_mu);
+    sent.push_back(msg);
+  });
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  namespace fs = std::filesystem;
+  fs::path log_file = log_dir_ / "cancel.log";
+  {
+    std::ofstream os(log_file);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.test] [info] keep" << std::endl;
+  }
+
+  ops::v1::LogFilterSpec spec;
+  spec.set_base_path(log_file.string());
+  spec.add_level_in("info");
+  google::protobuf::Timestamp start_ts;
+  google::protobuf::Timestamp end_ts;
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T10:00:00Z", &start_ts));
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T12:00:00Z", &end_ts));
+  *spec.mutable_start_time() = start_ts;
+  *spec.mutable_end_time() = end_ts;
+
+  ASSERT_TRUE(service_.SendLogFilterStart("op1", spec));
+  ASSERT_TRUE(service_.WaitForMessages(2, 1000ms));
+  ASSERT_TRUE(service_.SendCancel("op1"));
+  ASSERT_TRUE(service_.WaitForMessages(3, 1000ms));
+
+  bool saw_error = false;
+  {
+    std::lock_guard<std::mutex> lock(sent_mu);
+    for (const auto& msg : sent) {
+      if (msg.msg_case() == ops::v1::AgentToServer::kError && msg.error().op_id() == "op1") {
+        EXPECT_TRUE(msg.error().code() == "CANCELLED" ||
+                    msg.error().code() == std::to_string(static_cast<int>(::grpc::StatusCode::CANCELLED)));
+        saw_error = true;
+      }
+    }
+  }
+  EXPECT_TRUE(saw_error);
+
+  ASSERT_TRUE(service_.SendShutdown(false));
+  ASSERT_TRUE(service_.WaitForDone(2000ms));
+
+  zurg::agent::internal::RequestStop();
+  agent_thread_.join();
+}
+
+TEST_F(CallbackAgentIntegrationTest, SequentialLogTasksExecuteInOrder) {
+  std::vector<std::pair<int, std::string>> events;
+  std::mutex events_mu;
+  zurg::agent::internal::SetSendHookForTests([&](const ops::v1::AgentToServer& msg) {
+    std::lock_guard<std::mutex> lock(events_mu);
+    if (msg.msg_case() == ops::v1::AgentToServer::kData) {
+      events.emplace_back(0, msg.data().op_id());
+    } else if (msg.msg_case() == ops::v1::AgentToServer::kEof) {
+      events.emplace_back(1, msg.eof().op_id());
+    }
+  });
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  namespace fs = std::filesystem;
+  fs::path log1 = log_dir_ / "seq1.log";
+  fs::path log2 = log_dir_ / "seq2.log";
+  {
+    std::ofstream os(log1);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.test] [info] first" << std::endl;
+  }
+  {
+    std::ofstream os(log2);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:10:00.000] [agent.test] [info] second" << std::endl;
+  }
+
+  auto make_spec = [](const std::string& path, const std::string& start, const std::string& end) {
+    ops::v1::LogFilterSpec spec;
+    spec.set_base_path(path);
+    spec.add_level_in("info");
+    google::protobuf::Timestamp s;
+    google::protobuf::Timestamp e;
+    EXPECT_TRUE(google::protobuf::util::TimeUtil::FromString(start, &s));
+    EXPECT_TRUE(google::protobuf::util::TimeUtil::FromString(end, &e));
+    *spec.mutable_start_time() = s;
+    *spec.mutable_end_time() = e;
+    return spec;
+  };
+
+  auto spec1 = make_spec(log1.string(), "2025-09-27T10:55:00Z", "2025-09-27T11:05:00Z");
+  auto spec2 = make_spec(log2.string(), "2025-09-27T11:05:00Z", "2025-09-27T11:20:00Z");
+
+  ASSERT_TRUE(service_.SendLogFilterStart("op1", spec1));
+  ASSERT_TRUE(service_.SendLogFilterStart("op2", spec2));
+
+  ASSERT_TRUE(service_.WaitForMessages(6, 2000ms));
+
+  std::vector<std::pair<int, std::string>> snapshot;
+  {
+    std::lock_guard<std::mutex> lock(events_mu);
+    snapshot = events;
+  }
+
+  auto first_op2_data = std::find_if(snapshot.begin(), snapshot.end(), [](const auto& ev) {
+    return ev.first == 0 && ev.second == "op2";
+  });
+  auto op1_eof = std::find_if(snapshot.begin(), snapshot.end(), [](const auto& ev) {
+    return ev.first == 1 && ev.second == "op1";
+  });
+  ASSERT_NE(op1_eof, snapshot.end());
+  if (first_op2_data != snapshot.end()) {
+    EXPECT_TRUE(op1_eof < first_op2_data);
+  }
+
+  ASSERT_TRUE(service_.SendShutdown(false));
+  ASSERT_TRUE(service_.WaitForDone(2000ms));
+
+  zurg::agent::internal::RequestStop();
+  agent_thread_.join();
 }
 
 }  // namespace

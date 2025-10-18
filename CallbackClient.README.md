@@ -4,7 +4,7 @@
 
 - `os.proto` 的 `Control.Connect` 定义了 Agent 端与 Server 端的双向流式 RPC。
 - 现有同步实现难以满足实时性与扩展性需求，需要基于 gRPC Callback API 重构客户端。
-- Agent 必须按 Server 下发的 `StartOp` 顺序串行执行操作，同一时刻仅允许一个文件下载或抓包任务运行。
+- Agent 必须按 Server 下发的 `StartOp` 顺序串行执行操作，同一时刻仅允许一个日志过滤或抓包任务运行。
 
 ---
 
@@ -14,7 +14,7 @@
 2. 连接建立后自动发送 `AgentHello`，处理 `Heartbeat/Shutdown/CancelOp`。
 3. `StartOp` 进入串行队列，保障操作按序执行，执行时输出 `OpAck/OpData/OpEof/OpError`。
 4. 支持任务取消、异常恢复、自动重连与指数回退。
-5. 可复用现有 `file_ops`、`pcap_ops` 等模块实现具体任务。
+5. 可复用现有 `log_ops`、`pcap_ops` 等模块实现具体任务。
 
 ---
 
@@ -42,7 +42,7 @@
         └────┬────────┘
              │
      ┌───────┴────────┐
-     │ FileTaskRunner │ 复用 file_ops
+     │ LogFilterTaskRunner │ 复用 log_ops
      │ PcapTaskRunner │ 复用 pcap_ops
      │ ExecTaskRunner │ 复用 exec 模块
      └────────────────┘
@@ -79,12 +79,12 @@
 ### 3. Task Queue（串行执行）
 
 - 实现为单线程消费的 `std::deque`，每次取出一个任务执行，保证同一时间最多一个任务。
-- 文件下载与抓包任务共用这条队列，自然满足互斥要求。
+- 日志过滤与抓包任务共用这条队列，自然满足互斥要求。
 - 任务执行过程中定期检查取消标志，并通过 `OpLog/OpProgress` 反馈状态。
 
 ### 4. Task Runner
 
-- **FileTaskRunner**：调用 `file_ops::StreamFile`，将 chunk 封装为 `OpData`。
+- **LogFilterTaskRunner**：调用 `log_ops::StreamLogFilter`，将筛选后的日志块封装为 `OpData`。
 - **PcapTaskRunner**：调用 `pcap_ops::StreamCapture`，串流抓包数据。
 - **ExecTaskRunner**：运行命令行（后续扩展），传输 stdout/stderr。
 - 统一接口：`Run(TaskContext&) -> TaskResult`，负责在结束时发送 `OpEof` 或 `OpError`。
@@ -96,8 +96,8 @@
 1. `StartOp` 到达 → 排队 → `OpAck(accepted=true)`。
 2. 任务出队，执行 runner：
    - 期间可多次发送 `OpLog`/`OpProgress`。
-   - 产出数据时发送 `OpData`（FileChunk/PcapPacket/...）。
-3. 成功完成 → `OpEof`（包含 FileGetEof/PcapStats 等）。
+   - 产出数据时发送 `OpData`（LogChunk/PcapPacket/...）。
+3. 成功完成 → `OpEof`（包含 LogFilterEof/PcapStats 等）。
 4. 异常或取消 → `OpError`（含 code/message）。
 
 ---
@@ -128,7 +128,7 @@
    - 利用 in-process server 模拟 `ServerToAgent` 消息，验证消息序列。
 
 3. **端到端测试**：
-   - 启动真实回环 Server，串行下发 FileGet/Pcap/Exec，并检查互斥与顺序。
+   - 启动真实回环 Server，串行下发 LogFilter/Pcap/Exec，并检查互斥与顺序。
    - 测试 Cancel 和 Shutdown（drain=true/false）行为。
 
 4. **回归**：
@@ -165,7 +165,7 @@
 - ✅ `ControlCallbackClient` 已完成，串行任务队列、取消、Shutdown 逻辑在现有单元测试中得到验证。
 - ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetLoggerSinkForTests` 捕获。
 - ✅ gRPC 版本已升级至 1.62.0，`GRPC_CALLBACK_API_NONEXPERIMENTAL` 在本地与 CI 默认启用。
-- 🟢 `CallbackAgentIntegrationTest.HandlesPcapStartAndShutdown` 已启用，用于验证回调流的基本握手、StartOp/Ack/Data/Eof 以及 Shutdown(drain=false) 行为。
+- 🟢 `CallbackAgentIntegrationTest.HandlesLogFilterAndShutdown` 已启用，用于验证回调流的基本握手、日志过滤数据回传以及 Shutdown(drain=false) 行为。
 - 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
 - ⏭️ 下一步：扩展端到端测试覆盖（包括 Cancel、drain=true 等分支），并引入 callback server 端的稳定桩件用于 CI。
 
