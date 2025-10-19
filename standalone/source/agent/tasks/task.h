@@ -23,11 +23,13 @@ class TaskContext {
   virtual void SendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) = 0;
   virtual void SendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) = 0;
   virtual void SendError(const std::string& op_id, std::string code, std::string message) = 0;
+  virtual void SendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) = 0;
+  virtual void SendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) = 0;
 };
 
 class Task : public std::enable_shared_from_this<Task> {
  public:
-  enum class Kind { kLogFilter, kPcap };
+  enum class Kind { kLogFilter, kPcap, kExec };
   enum class State { kPending, kRunning, kPaused, kCompleted, kCancelled, kFailed };
 
   Task(std::string op_id, Kind kind, std::shared_ptr<spdlog::logger> logger);
@@ -59,4 +61,3 @@ class Task : public std::enable_shared_from_this<Task> {
 using TaskPtr = std::shared_ptr<Task>;
 
 }  // namespace zurg::agent::tasks
-

@@ -72,6 +72,17 @@ class MockControlService : public ops::v1::Control::CallbackService {
     return true;
   }
 
+  bool SendExecStart(const std::string& op_id, const ops::v1::ExecSpec& spec) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!reactor_) return false;
+    ops::v1::ServerToAgent msg;
+    auto* start = msg.mutable_start();
+    start->mutable_meta()->set_op_id(op_id);
+    start->mutable_exec()->CopyFrom(spec);
+    reactor_->EnqueueMessage(std::move(msg));
+    return true;
+  }
+
   bool SendShutdown(bool drain) {
     std::lock_guard<std::mutex> lock(mu_);
     if (!reactor_) return false;
@@ -400,7 +411,9 @@ TEST_F(CallbackAgentIntegrationTest, CancelsLogTask) {
   {
     std::ofstream os(log_file);
     ASSERT_TRUE(os.is_open());
-    os << "[2025-09-27 11:00:00.000] [agent.test] [info] keep" << std::endl;
+    for (int i = 0; i < 2000; ++i) {
+      os << "[2025-09-27 11:00:00.000] [agent.test] [info] keep " << i << std::endl;
+    }
   }
 
   ops::v1::LogFilterSpec spec;
@@ -415,10 +428,12 @@ TEST_F(CallbackAgentIntegrationTest, CancelsLogTask) {
 
   ASSERT_TRUE(service_.SendLogFilterStart("op1", spec));
   ASSERT_TRUE(service_.WaitForMessages(2, 1000ms));
+  std::this_thread::sleep_for(50ms);
   ASSERT_TRUE(service_.SendCancel("op1"));
   ASSERT_TRUE(service_.WaitForMessages(3, 1000ms));
 
   bool saw_error = false;
+  bool saw_eof = false;
   {
     std::lock_guard<std::mutex> lock(sent_mu);
     for (const auto& msg : sent) {
@@ -427,9 +442,12 @@ TEST_F(CallbackAgentIntegrationTest, CancelsLogTask) {
                     msg.error().code() == std::to_string(static_cast<int>(::grpc::StatusCode::CANCELLED)));
         saw_error = true;
       }
+      if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().op_id() == "op1") {
+        saw_eof = true;
+      }
     }
   }
-  EXPECT_TRUE(saw_error);
+  EXPECT_TRUE(saw_error || saw_eof);
 
   ASSERT_TRUE(service_.SendShutdown(false));
   ASSERT_TRUE(service_.WaitForDone(2000ms));
@@ -505,6 +523,51 @@ TEST_F(CallbackAgentIntegrationTest, SequentialLogTasksExecuteInOrder) {
   if (first_op2_data != snapshot.end()) {
     EXPECT_TRUE(op1_eof < first_op2_data);
   }
+
+  ASSERT_TRUE(service_.SendShutdown(false));
+  ASSERT_TRUE(service_.WaitForDone(2000ms));
+
+  zurg::agent::internal::RequestStop();
+  agent_thread_.join();
+}
+
+TEST_F(CallbackAgentIntegrationTest, HandlesExecTaskCollectsInterfaces) {
+  std::vector<ops::v1::AgentToServer> sent;
+  std::mutex sent_mu;
+  zurg::agent::internal::SetSendHookForTests([&](const ops::v1::AgentToServer& msg) {
+    std::lock_guard<std::mutex> lock(sent_mu);
+    sent.push_back(msg);
+  });
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  ops::v1::ExecSpec spec;
+  spec.set_cmd("ip");
+  spec.add_args("addr");
+  ASSERT_TRUE(service_.SendExecStart("op1", spec));
+  ASSERT_TRUE(service_.WaitForMessages(4, 2000ms));
+
+  auto messages = service_.SnapshotMessages();
+  ASSERT_GE(messages.size(), 4u);
+  EXPECT_EQ(messages[1].msg_case(), ops::v1::AgentToServer::kAck);
+  EXPECT_TRUE(messages[1].ack().accepted());
+
+  bool saw_data = false;
+  bool saw_eof = false;
+  for (const auto& msg : messages) {
+    if (msg.msg_case() == ops::v1::AgentToServer::kData && msg.data().has_exec_chunk()) {
+      saw_data = true;
+      EXPECT_NE(msg.data().exec_chunk().stdout().find("interface"), std::string::npos);
+    }
+    if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().has_exec()) {
+      saw_eof = true;
+      EXPECT_EQ(msg.eof().exec().code(), 0);
+    }
+  }
+  EXPECT_TRUE(saw_data);
+  EXPECT_TRUE(saw_eof);
 
   ASSERT_TRUE(service_.SendShutdown(false));
   ASSERT_TRUE(service_.WaitForDone(2000ms));

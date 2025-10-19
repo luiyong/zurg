@@ -1,6 +1,7 @@
 #include "agent_impl.h"
 
 #include "zurg/log_ops.h"
+#include "tasks/exec_task.h"
 #include "tasks/log_filter_task.h"
 #include "tasks/pcap_task.h"
 #include "tasks/task.h"
@@ -215,6 +216,7 @@ class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServ
   grpc::Status status_ = grpc::Status::OK;
 };
 
+using tasks::ExecTask;
 using tasks::LogFilterTask;
 using tasks::PcapTask;
 using tasks::Task;
@@ -385,6 +387,14 @@ class ControlCallbackClient : public TaskContext {
     DoSendError(op_id, std::move(code), std::move(message));
   }
 
+  void SendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) override {
+    DoSendExecData(op_id, std::move(chunk));
+  }
+
+  void SendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) override {
+    DoSendEofExec(op_id, exit);
+  }
+
  private:
   bool ShouldContinueInternal() const {
     if (!running_.load()) return false;
@@ -469,6 +479,23 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
+  void DoSendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) {
+    ops::v1::AgentToServer msg;
+    auto* data = msg.mutable_data();
+    data->set_op_id(op_id);
+    data->mutable_exec_chunk()->Swap(&chunk);
+    EnqueueWrite(std::move(msg));
+  }
+
+  void DoSendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) {
+    ops::v1::AgentToServer msg;
+    auto* tail = msg.mutable_eof();
+    tail->set_op_id(op_id);
+    tail->mutable_exec()->CopyFrom(exit);
+    logger_->info("exec op {} completed code={} note={}", op_id, exit.code(), exit.note());
+    EnqueueWrite(std::move(msg));
+  }
+
   void HandleStartOp(const ops::v1::StartOp& start) {
     const std::string op_id = start.meta().op_id();
     if (op_id.empty()) {
@@ -500,7 +527,9 @@ class ControlCallbackClient : public TaskContext {
       if (start.has_log_filter()) {
         task = std::make_shared<LogFilterTask>(op_id, start.log_filter(), options_.log_options, logger_);
       } else if (start.has_pcap()) {
-        task = std::make_shared<PcapTask>(op_id, start.pcap(), logger_);
+        task = std::make_shared<PcapTask>(op_id, start.pcap(), options_.log_options, logger_);
+      } else if (start.has_exec()) {
+        task = std::make_shared<ExecTask>(op_id, start.exec(), logger_);
       } else {
         if (logger_) {
           logger_->warn("reject StartOp op_id={} reason=unsupported", op_id);
@@ -513,7 +542,18 @@ class ControlCallbackClient : public TaskContext {
       task_queue_.push_back(task);
     }
 
-    const char* type_name = task->kind() == Task::Kind::kLogFilter ? "log" : "pcap";
+    const char* type_name = "unknown";
+    switch (task->kind()) {
+      case Task::Kind::kLogFilter:
+        type_name = "log";
+        break;
+      case Task::Kind::kPcap:
+        type_name = "pcap";
+        break;
+      case Task::Kind::kExec:
+        type_name = "exec";
+        break;
+    }
     logger_->info("accepted StartOp type={} op_id={}", type_name, op_id);
     SendAck(op_id, true);
     task_cv_.notify_all();
@@ -661,7 +701,18 @@ class ControlCallbackClient : public TaskContext {
         task_queue_.pop_front();
         current_task_ = task;
         if (logger_ && task) {
-          const char* type_name = task->kind() == Task::Kind::kLogFilter ? "log" : "pcap";
+          const char* type_name = "unknown";
+          switch (task->kind()) {
+            case Task::Kind::kLogFilter:
+              type_name = "log";
+              break;
+            case Task::Kind::kPcap:
+              type_name = "pcap";
+              break;
+            case Task::Kind::kExec:
+              type_name = "exec";
+              break;
+          }
           logger_->info("starting task op_id={} type={}", task->op_id(), type_name);
         }
       }
@@ -673,9 +724,20 @@ class ControlCallbackClient : public TaskContext {
         if (task) {
           tasks_.erase(task->op_id());
           if (logger_) {
-            const char* type_name = task->kind() == Task::Kind::kLogFilter ? "log" : "pcap";
-            logger_->info("task finished op_id={} type={} state={}"
-                          , task->op_id(), type_name, static_cast<int>(task->state()));
+            const char* type_name = "unknown";
+            switch (task->kind()) {
+              case Task::Kind::kLogFilter:
+                type_name = "log";
+                break;
+              case Task::Kind::kPcap:
+                type_name = "pcap";
+                break;
+              case Task::Kind::kExec:
+                type_name = "exec";
+                break;
+            }
+            logger_->info("task finished op_id={} type={} state={}",
+                          task->op_id(), type_name, static_cast<int>(task->state()));
           }
         }
         current_task_.reset();

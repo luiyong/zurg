@@ -44,7 +44,7 @@
      ┌───────┴────────┐
      │ LogFilterTaskRunner │ 复用 log_ops
      │ PcapTaskRunner │ 复用 pcap_ops
-     │ ExecTaskRunner │ 复用 exec 模块
+     │ ExecTaskRunner │ 采集网络接口信息
      └────────────────┘
 ```
 
@@ -85,8 +85,8 @@
 ### 4. Task Runner
 
 - **LogFilterTaskRunner**：调用 `log_ops::StreamLogFilter`，将筛选后的日志块封装为 `OpData`。
-- **PcapTaskRunner**：调用 `pcap_ops::StreamCapture`，串流抓包数据。
-- **ExecTaskRunner**：运行命令行（后续扩展），传输 stdout/stderr。
+- **PcapTaskRunner**：调用 `pcap_ops::StreamCapture` 捕获数据，生成临时 PCAP 文件并以块形式上传，最后返回 `PcapStats`。
+- **ExecTaskRunner**：当前支持 `ip addr` 场景，枚举已 UP 的网络接口并返回结构化文本。
 - 统一接口：`Run(TaskContext&) -> TaskResult`，负责在结束时发送 `OpEof` 或 `OpError`。
 
 ---
@@ -166,6 +166,7 @@
 - ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetLoggerSinkForTests` 捕获。
 - ✅ gRPC 版本已升级至 1.62.0，`GRPC_CALLBACK_API_NONEXPERIMENTAL` 在本地与 CI 默认启用。
 - 🟢 `CallbackAgentIntegrationTest.HandlesLogFilterAndShutdown` 已启用，用于验证回调流的基本握手、日志过滤数据回传以及 Shutdown(drain=false) 行为。
+- 🟢 `CallbackAgentIntegrationTest.HandlesExecTaskCollectsInterfaces` 覆盖 exec 任务的输出与退出码回传。
 - 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
 - ⏭️ 下一步：扩展端到端测试覆盖（包括 Cancel、drain=true 等分支），并引入 callback server 端的稳定桩件用于 CI。
 

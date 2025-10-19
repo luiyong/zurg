@@ -135,6 +135,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/log_filter_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/pcap_task.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/exec_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
   ${OS_PROTO_SRC}
   ${OS_GRPC_PROTO_SRC}
