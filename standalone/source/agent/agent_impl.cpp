@@ -600,12 +600,14 @@ class ControlCallbackClient : public TaskContext {
     const bool drain = shutdown.drain();
     ControlStreamReactor* reactor_to_cancel = nullptr;
     std::vector<std::string> cancelled_ops;
+
     {
       std::lock_guard<std::mutex> lock(mu_);
       drain_mode_ = drain;
       logger_->info("received shutdown request drain={} queue_size={}", drain, task_queue_.size());
       if (!drain) {
         if (current_task_) {
+
           current_task_->RequestCancel();
         }
         for (auto& task : task_queue_) {
@@ -629,6 +631,7 @@ class ControlCallbackClient : public TaskContext {
           cancelled_ops.push_back(task->op_id());
           it = tasks_.erase(it);
         }
+
         reactor_to_cancel = reactor_;
       }
     }
@@ -649,6 +652,7 @@ class ControlCallbackClient : public TaskContext {
       logger_->warn("cancelling all tasks reason={} queue_size={} current={}", reason,
                     task_queue_.size(), current_task_ ? current_task_->op_id() : "none");
     }
+
     std::vector<std::string> cancelled_ops;
     for (auto it = tasks_.begin(); it != tasks_.end();) {
       auto& task = it->second;
@@ -673,9 +677,11 @@ class ControlCallbackClient : public TaskContext {
         err->set_code("CANCELLED");
         err->set_message(std::string(reason));
         pending_writes_.push_back(std::move(msg));
+
       }
       MaybeStartWriteLocked();
     }
+
   }
   void RunTask(const std::shared_ptr<Task>& task) {
     if (task) {

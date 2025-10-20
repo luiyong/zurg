@@ -165,8 +165,10 @@
 - ✅ `ControlCallbackClient` 已完成，串行任务队列、取消、Shutdown 逻辑在现有单元测试中得到验证。
 - ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetLoggerSinkForTests` 捕获。
 - ✅ gRPC 版本已升级至 1.62.0，`GRPC_CALLBACK_API_NONEXPERIMENTAL` 在本地与 CI 默认启用。
+
 - 🟢 `CallbackAgentIntegrationTest.HandlesLogFilterAndShutdown` 已启用，用于验证回调流的基本握手、日志过滤数据回传以及 Shutdown(drain=false) 行为。
 - 🟢 `CallbackAgentIntegrationTest.HandlesExecTaskCollectsInterfaces` 覆盖 exec 任务的输出与退出码回传。
+
 - 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
 - ⏭️ 下一步：扩展端到端测试覆盖（包括 Cancel、drain=true 等分支），并引入 callback server 端的稳定桩件用于 CI。
 

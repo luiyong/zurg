@@ -16,6 +16,7 @@ option(TEST_INSTALLED_VERSION "Test the version found by find_package" OFF)
 # 使用系统安装的 GoogleTest（建议通过包管理器安装）
 find_package(GTest REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
+
 if (NOT Protobuf_PROTOC_EXECUTABLE AND TARGET protobuf::protoc)
   get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION)
   if (NOT _PROTOC_LOCATION)
@@ -26,6 +27,7 @@ if (NOT Protobuf_PROTOC_EXECUTABLE AND TARGET protobuf::protoc)
   endif()
   set(Protobuf_PROTOC_EXECUTABLE ${_PROTOC_LOCATION})
 endif()
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(fmt REQUIRED)
 find_package(OpenSSL REQUIRED)
