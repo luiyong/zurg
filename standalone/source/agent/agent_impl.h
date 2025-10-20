@@ -4,6 +4,7 @@
 #include <grpcpp/impl/codegen/server_callback_handlers.h>
 
 #include "os.grpc.pb.h"
+#include "zurg/log_ops.h"
 
 #include <chrono>
 #include <functional>
@@ -28,6 +29,7 @@ std::chrono::milliseconds ComputeBackoff(std::size_t attempt);
 void SleepWithStop(std::chrono::milliseconds delay);
 void SetSendHookForTests(std::function<void(const ops::v1::AgentToServer&)> hook);
 void SetLoggerSinkForTests(std::shared_ptr<spdlog::sinks::sink> sink);
+void SetLogOptionsForTests(zurg::log_ops::Options opts);
 
 }  // namespace internal
 

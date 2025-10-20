@@ -19,7 +19,9 @@ using PcapPacketConsumer = std::function<::grpc::Status(ops::v1::PcapPacket)>;
 ::grpc::Status StreamCapture(const ops::v1::PcapSpec& spec,
                              const PcapPacketConsumer& on_packet,
                              ops::v1::PcapStats* stats,
-                             const std::function<bool()>& should_stop = {});
+                             const std::function<bool()>& should_stop = {},
+                             int* datalink = nullptr,
+                             const std::function<std::chrono::steady_clock::time_point()>& now_provider = {});
 
 ::grpc::Status GenerateCapture(const ops::v1::PcapSpec& spec,
                                CaptureResult* result);

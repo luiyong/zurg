@@ -23,19 +23,43 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
 ::grpc::Status GenerateSynthetic(const ops::v1::PcapSpec& spec,
                                  const PcapPacketConsumer& on_packet,
                                  ops::v1::PcapStats* stats,
-                                 const std::function<bool()>& should_stop) {
+                                 const std::function<bool()>& should_stop,
+                                 int* datalink,
+                                 const std::function<std::chrono::steady_clock::time_point()>& now_provider) {
   if (!on_packet) {
     return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing packet callback");
   }
   if (!stats) {
     return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing stats");
   }
+  if (datalink) {
+    *datalink = DLT_EN10MB;
+  }
   std::mt19937 rng{std::random_device{}()};
   std::uniform_int_distribution<int> len_dist(60, spec.snaplen() ? spec.snaplen() : 256);
   const uint32_t trim = spec.payload_trim_bytes();
-  const uint64_t limit = spec.packet_limit() ? spec.packet_limit() : 10;
   const auto deadline = ExtractDuration(spec);
-  const auto start = std::chrono::steady_clock::now();
+  const bool has_deadline = deadline != std::chrono::steady_clock::duration::zero();
+
+  uint64_t limit = spec.packet_limit();
+  if (limit == 0 && !has_deadline) {
+    limit = 10;
+  }
+
+  auto now_fn = [&]() -> std::chrono::steady_clock::time_point {
+    return now_provider ? now_provider() : std::chrono::steady_clock::now();
+  };
+
+  auto steady_to_system = [&]() {
+    auto sys_now = std::chrono::system_clock::now();
+    auto steady_now = std::chrono::steady_clock::now();
+    auto offset = sys_now.time_since_epoch() - steady_now.time_since_epoch();
+    return [offset](const std::chrono::steady_clock::time_point& tp) {
+      return std::chrono::system_clock::time_point(tp.time_since_epoch() + offset);
+    };
+  }();
+
+  auto start = now_fn();
 
   uint64_t produced = 0;
   while (true) {
@@ -43,8 +67,8 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
       return ::grpc::Status(::grpc::StatusCode::CANCELLED, "capture cancelled");
     }
     if (limit && produced >= limit) break;
-    if (deadline != std::chrono::steady_clock::duration::zero() &&
-        std::chrono::steady_clock::now() - start >= deadline) {
+    auto now = now_fn();
+    if (has_deadline && now - start >= deadline) {
       break;
     }
     ops::v1::PcapPacket pkt;
@@ -55,9 +79,9 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
     std::string data(static_cast<std::size_t>(len), '\0');
     for (auto& ch : data) ch = static_cast<char>(rng() & 0xff);
     pkt.set_data(std::move(data));
-    auto now = std::chrono::system_clock::now();
-    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(now);
-    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now - secs);
+    auto sys_now = now_provider ? steady_to_system(now) : std::chrono::system_clock::now();
+    auto secs = std::chrono::time_point_cast<std::chrono::seconds>(sys_now);
+    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(sys_now - secs);
     pkt.mutable_ts()->set_seconds(secs.time_since_epoch().count());
     pkt.mutable_ts()->set_nanos(static_cast<int32_t>(nanos.count()));
     pkt.set_orig_len(len);
@@ -78,7 +102,9 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
 ::grpc::Status StreamCapture(const ops::v1::PcapSpec& spec,
                              const PcapPacketConsumer& on_packet,
                              ops::v1::PcapStats* stats,
-                             const std::function<bool()>& should_stop) {
+                             const std::function<bool()>& should_stop,
+                             int* datalink,
+                             const std::function<std::chrono::steady_clock::time_point()>& now_provider) {
   if (!on_packet) {
     return ::grpc::Status(::grpc::StatusCode::INVALID_ARGUMENT, "missing packet callback");
   }
@@ -88,7 +114,7 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
   stats->Clear();
 
   if (spec.if_name().empty()) {
-    return GenerateSynthetic(spec, on_packet, stats, should_stop);
+    return GenerateSynthetic(spec, on_packet, stats, should_stop, datalink, now_provider);
   }
 
   // GCOVR_EXCL_START: Real interface capture requires system resources and is
@@ -99,7 +125,10 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
   const uint64_t limit = spec.packet_limit();
   const auto deadline = ExtractDuration(spec);
   const bool has_deadline = deadline != std::chrono::steady_clock::duration::zero();
-  const auto deadline_point = has_deadline ? std::chrono::steady_clock::now() + deadline
+  auto now_fn = [&]() -> std::chrono::steady_clock::time_point {
+    return now_provider ? now_provider() : std::chrono::steady_clock::now();
+  };
+  const auto deadline_point = has_deadline ? now_fn() + deadline
                                            : std::chrono::steady_clock::time_point{};
 
   char errbuf[PCAP_ERRBUF_SIZE];
@@ -152,14 +181,18 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
                           "structured filters are not implemented");
   }
 
-  uint64_t captured = 0;
   auto handle_guard = std::unique_ptr<pcap_t, decltype(&pcap_close)>(handle, &pcap_close);
+  if (datalink) {
+    *datalink = pcap_datalink(handle_guard.get());
+  }
+
+  uint64_t captured = 0;
   while (true) {
     if (should_stop && should_stop()) {
       return ::grpc::Status(::grpc::StatusCode::CANCELLED, "capture cancelled");
     }
     if (limit && captured >= limit) break;
-    if (has_deadline && std::chrono::steady_clock::now() >= deadline_point) break;
+    if (has_deadline && now_fn() >= deadline_point) break;
 
     struct pcap_pkthdr* header = nullptr;
     const u_char* data = nullptr;

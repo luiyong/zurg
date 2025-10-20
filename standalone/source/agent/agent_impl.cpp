@@ -1,6 +1,10 @@
 #include "agent_impl.h"
 
-#include "zurg/file_ops.h"
+#include "zurg/log_ops.h"
+#include "tasks/exec_task.h"
+#include "tasks/log_filter_task.h"
+#include "tasks/pcap_task.h"
+#include "tasks/task.h"
 #include "zurg/logger_manager.h"
 #include "zurg/pcap_ops.h"
 
@@ -13,7 +17,9 @@
 #include <csignal>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <functional>
+#include <system_error>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -33,6 +39,7 @@ std::function<void(const ops::v1::AgentToServer&)> g_send_hook;
 std::once_flag g_logger_once;
 std::shared_ptr<spdlog::logger> g_logger;
 std::shared_ptr<spdlog::sinks::sink> g_logger_sink;
+std::optional<zurg::log_ops::Options> g_log_options_override;
 }
 
 bool IsRunning() { return g_running.load(); }
@@ -49,6 +56,10 @@ void ClearTestHooks() {
 void ResetForTests() {
   g_running.store(true);
   ClearTestHooks();
+  {
+    std::lock_guard<std::mutex> lock(g_hook_mu);
+    g_log_options_override.reset();
+  }
 }
 
 void SetBackoffHookForTests(std::function<std::chrono::milliseconds(std::size_t)> hook) {
@@ -69,6 +80,16 @@ void SetSendHookForTests(std::function<void(const ops::v1::AgentToServer&)> hook
 std::function<void(const ops::v1::AgentToServer&)> GetSendHook() {
   std::lock_guard<std::mutex> lock(g_hook_mu);
   return g_send_hook;
+}
+
+void SetLogOptionsForTests(zurg::log_ops::Options opts) {
+  std::lock_guard<std::mutex> lock(g_hook_mu);
+  g_log_options_override = std::move(opts);
+}
+
+std::optional<zurg::log_ops::Options> GetLogOptionsOverride() {
+  std::lock_guard<std::mutex> lock(g_hook_mu);
+  return g_log_options_override;
 }
 
 std::shared_ptr<spdlog::logger> GetLogger() {
@@ -168,15 +189,6 @@ namespace {
 
 using TaskShouldContinueFn = std::function<bool()>;
 
-struct PendingTask {
-  enum class Type { kFileGet, kPcap };
-
-  std::string op_id;
-  Type type;
-  ops::v1::StartOp start;
-  std::atomic<bool> cancelled{false};
-};
-
 class ControlCallbackClient;
 
 class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServer, ops::v1::ServerToAgent> {
@@ -204,10 +216,17 @@ class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServ
   grpc::Status status_ = grpc::Status::OK;
 };
 
-class ControlCallbackClient {
+using tasks::ExecTask;
+using tasks::LogFilterTask;
+using tasks::PcapTask;
+using tasks::Task;
+using tasks::TaskContext;
+using tasks::TaskPtr;
+
+class ControlCallbackClient : public TaskContext {
  public:
   struct Options {
-    zurg::file_ops::Options file_options;
+    zurg::log_ops::Options log_options;
     TaskShouldContinueFn should_run;
     std::function<std::chrono::milliseconds(std::size_t)> backoff_fn;
     std::function<void(std::chrono::milliseconds)> sleep_fn;
@@ -230,6 +249,16 @@ class ControlCallbackClient {
     }
     if (!options_.on_send) {
       options_.on_send = internal::GetSendHook();
+    }
+    if (options_.log_options.temp_dir.empty()) {
+      std::error_code ec;
+      auto tmp = std::filesystem::temp_directory_path(ec);
+      if (!ec) {
+        options_.log_options.temp_dir = tmp.string();
+      }
+    }
+    if (options_.log_options.chunk_size == 0) {
+      options_.log_options.chunk_size = 64 * 1024;
     }
   }
 
@@ -333,8 +362,46 @@ class ControlCallbackClient {
     pending_writes_.clear();
     CancelAllLocked("stream closed");
   }
+  // TaskContext overrides
+  bool ShouldContinue() const override {
+    return ShouldContinueInternal();
+  }
+
+  void SendLogData(const std::string& op_id, ops::v1::LogChunk chunk) override {
+    DoSendLogData(op_id, std::move(chunk));
+  }
+
+  void SendEofLog(const std::string& op_id, const ops::v1::LogFilterEof& eof) override {
+    DoSendEofLog(op_id, eof);
+  }
+
+  void SendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) override {
+    DoSendPcapData(op_id, std::move(pkt));
+  }
+
+  void SendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) override {
+    DoSendEofPcap(op_id, stats);
+  }
+
+  void SendError(const std::string& op_id, std::string code, std::string message) override {
+    DoSendError(op_id, std::move(code), std::move(message));
+  }
+
+  void SendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) override {
+    DoSendExecData(op_id, std::move(chunk));
+  }
+
+  void SendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) override {
+    DoSendEofExec(op_id, exit);
+  }
 
  private:
+  bool ShouldContinueInternal() const {
+    if (!running_.load()) return false;
+    if (!options_.should_run) return true;
+    return options_.should_run();
+  }
+
   void MaybeStartWriteLocked() {
     if (!reactor_ || write_in_flight_ || pending_writes_.empty()) return;
     current_write_.emplace(std::move(pending_writes_.front()));
@@ -368,7 +435,7 @@ class ControlCallbackClient {
     EnqueueWrite(std::move(msg));
   }
 
-  void SendError(const std::string& op_id, std::string code, std::string message) {
+  void DoSendError(const std::string& op_id, std::string code, std::string message) {
     ops::v1::AgentToServer msg;
     auto* err = msg.mutable_error();
     err->set_op_id(op_id);
@@ -378,15 +445,15 @@ class ControlCallbackClient {
     EnqueueWrite(std::move(msg));
   }
 
-  void SendFileData(const std::string& op_id, ops::v1::FileChunk chunk) {
+  void DoSendLogData(const std::string& op_id, ops::v1::LogChunk chunk) {
     ops::v1::AgentToServer msg;
     auto* data = msg.mutable_data();
     data->set_op_id(op_id);
-    data->mutable_file_chunk()->Swap(&chunk);
+    data->mutable_log_chunk()->Swap(&chunk);
     EnqueueWrite(std::move(msg));
   }
 
-  void SendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) {
+  void DoSendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) {
     ops::v1::AgentToServer msg;
     auto* data = msg.mutable_data();
     data->set_op_id(op_id);
@@ -394,21 +461,38 @@ class ControlCallbackClient {
     EnqueueWrite(std::move(msg));
   }
 
-  void SendEofFile(const std::string& op_id, const ops::v1::FileGetEof& eof) {
+  void DoSendEofLog(const std::string& op_id, const ops::v1::LogFilterEof& eof) {
     ops::v1::AgentToServer msg;
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
-    tail->mutable_file()->CopyFrom(eof);
-    logger_->info("file op {} completed", op_id);
+    tail->mutable_log()->CopyFrom(eof);
+    logger_->info("log filter op {} completed size={} lines={}", op_id, eof.total_size(), eof.total_lines());
     EnqueueWrite(std::move(msg));
   }
 
-  void SendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) {
+  void DoSendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) {
     ops::v1::AgentToServer msg;
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
     tail->mutable_pcap()->CopyFrom(stats);
     logger_->info("pcap op {} completed packets={} dropped={}", op_id, stats.received(), stats.dropped());
+    EnqueueWrite(std::move(msg));
+  }
+
+  void DoSendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) {
+    ops::v1::AgentToServer msg;
+    auto* data = msg.mutable_data();
+    data->set_op_id(op_id);
+    data->mutable_exec_chunk()->Swap(&chunk);
+    EnqueueWrite(std::move(msg));
+  }
+
+  void DoSendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) {
+    ops::v1::AgentToServer msg;
+    auto* tail = msg.mutable_eof();
+    tail->set_op_id(op_id);
+    tail->mutable_exec()->CopyFrom(exit);
+    logger_->info("exec op {} completed code={} note={}", op_id, exit.code(), exit.note());
     EnqueueWrite(std::move(msg));
   }
 
@@ -422,7 +506,7 @@ class ControlCallbackClient {
       return;
     }
 
-    std::shared_ptr<PendingTask> task;
+    std::shared_ptr<Task> task;
     {
       std::lock_guard<std::mutex> lock(mu_);
       if (drain_mode_) {
@@ -439,11 +523,13 @@ class ControlCallbackClient {
         SendAck(op_id, false, "duplicate op_id");
         return;
       }
-      PendingTask::Type type;
-      if (start.has_file_get()) {
-        type = PendingTask::Type::kFileGet;
+
+      if (start.has_log_filter()) {
+        task = std::make_shared<LogFilterTask>(op_id, start.log_filter(), options_.log_options, logger_);
       } else if (start.has_pcap()) {
-        type = PendingTask::Type::kPcap;
+        task = std::make_shared<PcapTask>(op_id, start.pcap(), options_.log_options, logger_);
+      } else if (start.has_exec()) {
+        task = std::make_shared<ExecTask>(op_id, start.exec(), logger_);
       } else {
         if (logger_) {
           logger_->warn("reject StartOp op_id={} reason=unsupported", op_id);
@@ -451,22 +537,30 @@ class ControlCallbackClient {
         SendAck(op_id, false, "unsupported operation");
         return;
       }
-      task = std::make_shared<PendingTask>();
-      task->op_id = op_id;
-      task->type = type;
-      task->start = start;
-      task_queue_.push_back(task);
+
       tasks_[op_id] = task;
+      task_queue_.push_back(task);
     }
 
-    logger_->info("accepted StartOp type={} op_id={}", task->type == PendingTask::Type::kFileGet ? "file" : "pcap",
-                  op_id);
+    const char* type_name = "unknown";
+    switch (task->kind()) {
+      case Task::Kind::kLogFilter:
+        type_name = "log";
+        break;
+      case Task::Kind::kPcap:
+        type_name = "pcap";
+        break;
+      case Task::Kind::kExec:
+        type_name = "exec";
+        break;
+    }
+    logger_->info("accepted StartOp type={} op_id={}", type_name, op_id);
     SendAck(op_id, true);
     task_cv_.notify_all();
   }
 
   void HandleCancel(const std::string& op_id) {
-    std::shared_ptr<PendingTask> target;
+    std::shared_ptr<Task> target;
     {
       std::lock_guard<std::mutex> lock(mu_);
       auto it = tasks_.find(op_id);
@@ -476,20 +570,19 @@ class ControlCallbackClient {
         }
         return;
       }
-      target = it->second.lock();
+      target = it->second;
       if (!target) {
         tasks_.erase(it);
         return;
       }
-      if (current_task_ && current_task_->op_id == op_id) {
-        target->cancelled.store(true);
+      if (current_task_ && current_task_ == target) {
+        target->RequestCancel();
         return;
       }
-      auto q_it = std::find_if(task_queue_.begin(), task_queue_.end(),
-                               [&](const std::shared_ptr<PendingTask>& t) { return t->op_id == op_id; });
+      auto q_it = std::find(task_queue_.begin(), task_queue_.end(), target);
       if (q_it != task_queue_.end()) {
         task_queue_.erase(q_it);
-        tasks_.erase(op_id);
+        tasks_.erase(it);
       } else {
         if (logger_) {
           logger_->debug("cancel op_id={} no longer queued", op_id);
@@ -498,32 +591,47 @@ class ControlCallbackClient {
       }
     }
     if (target) {
-      target->cancelled.store(true);
-      SendError(op_id, "CANCELLED", "operation cancelled");
+      target->RequestCancel();
+      DoSendError(op_id, "CANCELLED", "operation cancelled");
     }
   }
 
   void HandleShutdown(const ops::v1::Shutdown& shutdown) {
     const bool drain = shutdown.drain();
     ControlStreamReactor* reactor_to_cancel = nullptr;
+    std::vector<std::string> cancelled_ops;
+
     {
       std::lock_guard<std::mutex> lock(mu_);
       drain_mode_ = drain;
       logger_->info("received shutdown request drain={} queue_size={}", drain, task_queue_.size());
       if (!drain) {
         if (current_task_) {
-          current_task_->cancelled.store(true);
+
+          current_task_->RequestCancel();
         }
         for (auto& task : task_queue_) {
-          task->cancelled.store(true);
-        }
-        task_queue_.clear();
-        for (auto& entry : tasks_) {
-          if (auto ptr = entry.second.lock()) {
-            ptr->cancelled.store(true);
+          if (task) {
+            task->RequestCancel();
+            cancelled_ops.push_back(task->op_id());
           }
         }
-        tasks_.clear();
+        task_queue_.clear();
+        for (auto it = tasks_.begin(); it != tasks_.end();) {
+          auto& task = it->second;
+          if (!task) {
+            it = tasks_.erase(it);
+            continue;
+          }
+          if (current_task_ && task == current_task_) {
+            ++it;
+            continue;
+          }
+          task->RequestCancel();
+          cancelled_ops.push_back(task->op_id());
+          it = tasks_.erase(it);
+        }
+
         reactor_to_cancel = reactor_;
       }
     }
@@ -531,6 +639,9 @@ class ControlCallbackClient {
       reactor_to_cancel->TryCancel();
     }
     if (!drain) {
+      for (const auto& op : cancelled_ops) {
+        DoSendError(op, "CANCELLED", "operation cancelled");
+      }
       running_.store(false);
       task_cv_.notify_all();
     }
@@ -539,86 +650,48 @@ class ControlCallbackClient {
   void CancelAllLocked(std::string_view reason) {
     if (logger_) {
       logger_->warn("cancelling all tasks reason={} queue_size={} current={}", reason,
-                    task_queue_.size(), current_task_ ? current_task_->op_id : "none");
+                    task_queue_.size(), current_task_ ? current_task_->op_id() : "none");
     }
-    for (auto& entry : tasks_) {
-      if (auto ptr = entry.second.lock()) {
-        ptr->cancelled.store(true);
-        if (reactor_) {
-          ops::v1::AgentToServer msg;
-          auto* err = msg.mutable_error();
-          err->set_op_id(ptr->op_id);
-          err->set_code("CANCELLED");
-          err->set_message(std::string(reason));
-          pending_writes_.push_back(std::move(msg));
-        }
+
+    std::vector<std::string> cancelled_ops;
+    for (auto it = tasks_.begin(); it != tasks_.end();) {
+      auto& task = it->second;
+      if (!task) {
+        it = tasks_.erase(it);
+        continue;
+      }
+      task->RequestCancel();
+      if (current_task_ && task == current_task_) {
+        ++it;
+      } else {
+        cancelled_ops.push_back(task->op_id());
+        it = tasks_.erase(it);
       }
     }
-    tasks_.clear();
     task_queue_.clear();
     if (reactor_) {
+      for (const auto& op_id : cancelled_ops) {
+        ops::v1::AgentToServer msg;
+        auto* err = msg.mutable_error();
+        err->set_op_id(op_id);
+        err->set_code("CANCELLED");
+        err->set_message(std::string(reason));
+        pending_writes_.push_back(std::move(msg));
+
+      }
       MaybeStartWriteLocked();
     }
-  }
 
-  bool ShouldStop(const std::shared_ptr<PendingTask>& task) const {
-    return task->cancelled.load() || (options_.should_run && !options_.should_run());
   }
-
-  void RunFileTask(const std::shared_ptr<PendingTask>& task) {
-    ops::v1::FileGetEof eof;
-    auto consumer = [this, task](ops::v1::FileChunk chunk) -> ::grpc::Status {
-      if (task->cancelled.load()) {
-        return ::grpc::Status(::grpc::StatusCode::CANCELLED, "cancelled");
-      }
-      SendFileData(task->op_id, std::move(chunk));
-      return ::grpc::Status::OK;
-    };
-    auto should_stop = [this, task]() { return ShouldStop(task); };
-    ::grpc::Status status = zurg::file_ops::StreamFile(options_.file_options,
-                                                      task->start.file_get(),
-                                                      should_stop,
-                                                      consumer,
-                                                      &eof);
-    if (status.ok()) {
-      SendEofFile(task->op_id, eof);
-    } else {
-      SendError(task->op_id, std::to_string(static_cast<int>(status.error_code())), status.error_message());
-    }
-  }
-
-  void RunPcapTask(const std::shared_ptr<PendingTask>& task) {
-    ops::v1::PcapStats stats;
-    auto consumer = [this, task](ops::v1::PcapPacket pkt) -> ::grpc::Status {
-      if (task->cancelled.load()) {
-        return ::grpc::Status(::grpc::StatusCode::CANCELLED, "cancelled");
-      }
-      SendPcapData(task->op_id, std::move(pkt));
-      return ::grpc::Status::OK;
-    };
-    auto should_stop = [this, task]() { return ShouldStop(task); };
-    ::grpc::Status status = zurg::pcap_ops::StreamCapture(task->start.pcap(), consumer, &stats, should_stop);
-    if (status.ok()) {
-      SendEofPcap(task->op_id, stats);
-    } else {
-      SendError(task->op_id, std::to_string(static_cast<int>(status.error_code())), status.error_message());
-    }
-  }
-
-  void RunTask(const std::shared_ptr<PendingTask>& task) {
-    switch (task->type) {
-      case PendingTask::Type::kFileGet:
-        RunFileTask(task);
-        break;
-      case PendingTask::Type::kPcap:
-        RunPcapTask(task);
-        break;
+  void RunTask(const std::shared_ptr<Task>& task) {
+    if (task) {
+      task->Run(*this);
     }
   }
 
   void WorkerLoop() {
     while (running_.load()) {
-      std::shared_ptr<PendingTask> task;
+      std::shared_ptr<Task> task;
       {
         std::unique_lock<std::mutex> lock(mu_);
         task_cv_.wait(lock, [&] {
@@ -634,8 +707,19 @@ class ControlCallbackClient {
         task_queue_.pop_front();
         current_task_ = task;
         if (logger_ && task) {
-          logger_->info("starting task op_id={} type={}", task->op_id,
-                        task->type == PendingTask::Type::kFileGet ? "file" : "pcap");
+          const char* type_name = "unknown";
+          switch (task->kind()) {
+            case Task::Kind::kLogFilter:
+              type_name = "log";
+              break;
+            case Task::Kind::kPcap:
+              type_name = "pcap";
+              break;
+            case Task::Kind::kExec:
+              type_name = "exec";
+              break;
+          }
+          logger_->info("starting task op_id={} type={}", task->op_id(), type_name);
         }
       }
 
@@ -643,9 +727,24 @@ class ControlCallbackClient {
 
       {
         std::lock_guard<std::mutex> lock(mu_);
-        tasks_.erase(task->op_id);
-        if (logger_ && task) {
-          logger_->info("task finished op_id={} cancelled={}", task->op_id, task->cancelled.load());
+        if (task) {
+          tasks_.erase(task->op_id());
+          if (logger_) {
+            const char* type_name = "unknown";
+            switch (task->kind()) {
+              case Task::Kind::kLogFilter:
+                type_name = "log";
+                break;
+              case Task::Kind::kPcap:
+                type_name = "pcap";
+                break;
+              case Task::Kind::kExec:
+                type_name = "exec";
+                break;
+            }
+            logger_->info("task finished op_id={} type={} state={}",
+                          task->op_id(), type_name, static_cast<int>(task->state()));
+          }
         }
         current_task_.reset();
         if (drain_mode_ && task_queue_.empty()) {
@@ -669,9 +768,9 @@ class ControlCallbackClient {
   bool write_in_flight_ = false;
 
   std::condition_variable task_cv_;
-  std::deque<std::shared_ptr<PendingTask>> task_queue_;
-  std::unordered_map<std::string, std::weak_ptr<PendingTask>> tasks_;
-  std::shared_ptr<PendingTask> current_task_;
+  std::deque<std::shared_ptr<Task>> task_queue_;
+  std::unordered_map<std::string, std::shared_ptr<Task>> tasks_;
+  std::shared_ptr<Task> current_task_;
   bool drain_mode_ = false;
   bool stop_worker_ = false;
   std::shared_ptr<spdlog::logger> logger_;
@@ -742,6 +841,9 @@ void StartAgent(ops::v1::Control::StubInterface* stub, const std::string& agent_
   options.should_run = [] { return internal::IsRunning(); };
   options.backoff_fn = [](std::size_t attempt) { return internal::ComputeBackoff(attempt); };
   options.sleep_fn = [](std::chrono::milliseconds delay) { internal::SleepWithStop(delay); };
+  if (auto override_opts = internal::GetLogOptionsOverride()) {
+    options.log_options = *override_opts;
+  }
 
   ControlCallbackClient client(stub, agent_id, options);
   client.Run();
