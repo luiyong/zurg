@@ -29,6 +29,7 @@ if(NOT TARGET fmt::fmt)
 endif()
 
 find_package(gRPC CONFIG QUIET)
+find_package(yaml-cpp CONFIG QUIET)
 set(GRPCPP_LINK_LIBS "")
 set(GRPCPP_INCLUDE_DIRS_RES "")
 set(GRPCPP_COMPILE_OPTS "")
@@ -45,6 +46,15 @@ else()
   list(APPEND GRPCPP_INCLUDE_DIRS_RES ${GRPCPP_INCLUDE_DIRS})
   list(APPEND GRPCPP_COMPILE_OPTS ${GRPCPP_CFLAGS_OTHER})
   list(APPEND GRPCPP_LIBRARY_DIRS_RES ${GRPCPP_LIBRARY_DIRS})
+endif()
+
+if(NOT TARGET yaml-cpp::yaml-cpp)
+  CPMAddPackage(
+    NAME yaml-cpp
+    GITHUB_REPOSITORY jbeder/yaml-cpp
+    GIT_TAG 0.8.0
+    OPTIONS "YAML_CPP_BUILD_TESTS OFF" "YAML_CPP_BUILD_TOOLS OFF" "YAML_CPP_INSTALL OFF"
+  )
 endif()
 
 # ---- Create standalone executables ----
@@ -67,6 +77,7 @@ target_link_libraries(${PROJECT_NAME}
     zurg::zurg
     cxxopts
     fmt::fmt
+    yaml-cpp::yaml-cpp
     ${GRPCPP_LINK_LIBS}
 )
 

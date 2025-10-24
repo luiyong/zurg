@@ -3,11 +3,13 @@
 #include "tasks/task.h"
 #include "zurg/log_ops.h"
 
+#include <cstdint>
+
 namespace zurg::agent::tasks {
 
 class PcapTask : public Task {
  public:
-  PcapTask(const std::string& op_id,
+  PcapTask(std::uint32_t op_id,
            const ops::v1::PcapSpec& spec,
            const zurg::log_ops::Options& file_options,
            std::shared_ptr<spdlog::logger> logger);

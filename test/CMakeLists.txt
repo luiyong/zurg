@@ -129,6 +129,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/source/pcap_ops_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/logger_manager_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/log_ops_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/temp_file_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/callback_agent_integration_test.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/log_ops.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp

@@ -70,7 +70,7 @@ struct InterfaceInfo {
 
 }  // namespace
 
-ExecTask::ExecTask(const std::string& op_id,
+ExecTask::ExecTask(std::uint32_t op_id,
                    const ops::v1::ExecSpec& spec,
                    std::shared_ptr<spdlog::logger> logger)
     : Task(op_id, Kind::kExec, std::move(logger)), spec_(spec) {}

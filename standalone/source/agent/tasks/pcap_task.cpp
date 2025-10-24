@@ -3,22 +3,14 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <random>
+#include <string_view>
 
 #include "zurg/pcap_ops.h"
+#include "zurg/temp_file.h"
 
 namespace zurg::agent::tasks {
 namespace {
 namespace fs = std::filesystem;
-
-std::string MakeSuffix() {
-  static thread_local std::mt19937_64 rng{std::random_device{}()};
-  std::uniform_int_distribution<std::uint64_t> dist;
-  std::uint64_t value = dist(rng);
-  char buf[17];
-  std::snprintf(buf, sizeof(buf), "%016llx", static_cast<long long>(value));
-  return std::string(buf);
-}
 
 void WriteGlobalHeader(std::ofstream& out, uint32_t snaplen, uint32_t network) {
   struct Header {
@@ -52,7 +44,7 @@ void WriteRecord(std::ofstream& out, const ops::v1::PcapPacket& pkt) {
 
 }  // namespace
 
-PcapTask::PcapTask(const std::string& op_id,
+PcapTask::PcapTask(std::uint32_t op_id,
                    const ops::v1::PcapSpec& spec,
                    const zurg::log_ops::Options& file_options,
                    std::shared_ptr<spdlog::logger> logger)
@@ -61,11 +53,22 @@ PcapTask::PcapTask(const std::string& op_id,
 void PcapTask::Run(TaskContext& ctx) {
   SetState(State::kRunning);
 
-  fs::path temp_dir = file_options_.temp_dir.empty() ? fs::temp_directory_path()
-                                                     : fs::path(file_options_.temp_dir);
-  std::error_code ec;
-  fs::create_directories(temp_dir, ec);
-  fs::path temp_file = temp_dir / ("pcap-" + op_id() + "-" + MakeSuffix() + ".pcap");
+  fs::path temp_dir;
+  try {
+    temp_dir = zurg::temp_file::ResolveDirectory(file_options_.temp_dir);
+  } catch (const std::filesystem::filesystem_error& err) {
+    SetState(State::kFailed);
+    ctx.SendError(op_id(), "INTERNAL", err.code().message());
+    return;
+  }
+  fs::path temp_file;
+  try {
+    temp_file = zurg::temp_file::CreateUniquePath(temp_dir, "pcap-" + op_id() + "-", ".pcap");
+  } catch (const std::exception& ex) {
+    SetState(State::kFailed);
+    ctx.SendError(op_id(), "INTERNAL", ex.what());
+    return;
+  }
 
   std::ofstream out(temp_file, std::ios::binary | std::ios::trunc);
   if (!out) {
@@ -129,37 +132,31 @@ void PcapTask::Run(TaskContext& ctx) {
     return;
   }
 
-  std::ifstream in(temp_file, std::ios::binary);
-  if (!in) {
-    cleanup();
-    SetState(State::kFailed);
-    ctx.SendError(op_id(), "INTERNAL", "failed to reopen temp pcap file");
-    return;
-  }
-
   const std::size_t chunk_size = file_options_.chunk_size == 0 ? 64 * 1024 : file_options_.chunk_size;
-  std::vector<char> buffer(chunk_size);
-  int64_t offset = 0;
-  while (in) {
-    if (CancelRequested() || !ctx.ShouldContinue()) {
-      in.close();
-      cleanup();
-      SetState(State::kCancelled);
-      ctx.SendError(op_id(), "CANCELLED", "operation cancelled");
-      return;
-    }
-    in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    std::streamsize got = in.gcount();
-    if (got <= 0) break;
-    ops::v1::LogChunk chunk;
-    chunk.set_offset(offset);
-    chunk.set_data(buffer.data(), static_cast<std::size_t>(got));
-    ctx.SendLogData(op_id(), std::move(chunk));
-    offset += got;
-  }
-  in.close();
+  auto stream_status = zurg::temp_file::StreamFile(
+      temp_file, chunk_size,
+      [&]() { return CancelRequested() || !ctx.ShouldContinue(); },
+      [&](std::int64_t offset, std::string_view data) -> ::grpc::Status {
+        ops::v1::LogChunk chunk;
+        chunk.set_offset(offset);
+        chunk.set_data(data.data(), data.size());
+        ctx.SendLogData(op_id(), std::move(chunk));
+        return ::grpc::Status::OK;
+      });
 
   cleanup();
+
+  if (!stream_status.ok()) {
+    if (stream_status.error_code() == ::grpc::StatusCode::CANCELLED) {
+      SetState(State::kCancelled);
+      ctx.SendError(op_id(), "CANCELLED", stream_status.error_message());
+    } else {
+      SetState(State::kFailed);
+      ctx.SendError(op_id(), std::to_string(static_cast<int>(stream_status.error_code())),
+                    stream_status.error_message());
+    }
+    return;
+  }
 
   SetState(State::kCompleted);
   ctx.SendEofPcap(op_id(), stats);

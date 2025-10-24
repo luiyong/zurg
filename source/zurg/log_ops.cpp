@@ -3,20 +3,19 @@
 #include <google/protobuf/util/time_util.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cctype>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <random>
 #include <set>
 #include <string_view>
 #include <system_error>
 #include <unordered_set>
 #include <vector>
 #include <ctime>
+
+#include "zurg/temp_file.h"
 
 namespace zurg::log_ops {
 namespace {
@@ -184,22 +183,6 @@ bool ContainsFilter(std::string_view haystack, const std::string& needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
-std::string MakeSuffix() {
-  static std::mt19937_64 rng{std::random_device{}()};
-  std::uniform_int_distribution<std::uint64_t> dist;
-  std::uint64_t value = dist(rng);
-  std::array<char, 17> buf{};
-  std::snprintf(buf.data(), buf.size(), "%016llx", static_cast<long long>(value));
-  return std::string(buf.data());
-}
-
-fs::path EnsureTempDir(const Options& opts) {
-  fs::path dir = opts.temp_dir.empty() ? fs::temp_directory_path() : fs::path(opts.temp_dir);
-  std::error_code ec;
-  fs::create_directories(dir, ec);
-  return dir;
-}
-
 ::grpc::Status MakeError(::grpc::StatusCode code, std::string msg) {
   return ::grpc::Status(code, std::move(msg));
 }
@@ -264,9 +247,20 @@ fs::path EnsureTempDir(const Options& opts) {
 
   std::string contains = spec.grep_contains();
 
-  fs::path temp_dir = EnsureTempDir(opts);
+  fs::path temp_dir;
+  try {
+    temp_dir = temp_file::ResolveDirectory(opts.temp_dir);
+  } catch (const std::filesystem::filesystem_error& err) {
+    return MakeError(::grpc::StatusCode::INTERNAL, err.code().message());
+  }
+
   std::string base_name = spec.output_basename().empty() ? "logfilter" : spec.output_basename();
-  fs::path temp_path = temp_dir / (base_name + "-" + MakeSuffix());
+  fs::path temp_path;
+  try {
+    temp_path = temp_file::CreateUniquePath(temp_dir, base_name + "-", "");
+  } catch (const std::exception& ex) {
+    return MakeError(::grpc::StatusCode::INTERNAL, ex.what());
+  }
 
   std::ofstream out(temp_path, std::ios::binary);
   if (!out) {
@@ -337,30 +331,21 @@ fs::path EnsureTempDir(const Options& opts) {
     eof->add_source_files(path);
   }
 
-  std::ifstream in(temp_path, std::ios::binary);
-  if (!in) {
-    return MakeError(::grpc::StatusCode::INTERNAL, "failed to reopen temp file");
-  }
-  std::vector<char> buffer(opts.chunk_size == 0 ? 64 * 1024 : opts.chunk_size);
-  std::int64_t offset = 0;
-  while (in) {
-    if (should_stop && should_stop()) {
-      return MakeError(::grpc::StatusCode::CANCELLED, "operation cancelled");
+  auto stream_status = temp_file::StreamFile(
+      temp_path, opts.chunk_size, should_stop,
+      [&](std::int64_t offset, std::string_view data) -> ::grpc::Status {
+        ops::v1::LogChunk chunk;
+        chunk.set_offset(offset);
+        chunk.set_data(data.data(), data.size());
+        return on_chunk(std::move(chunk));
+      });
+  if (!stream_status.ok()) {
+    if (opts.cleanup_temp_file) {
+      std::error_code ec;
+      fs::remove(temp_path, ec);
     }
-    in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    std::streamsize got = in.gcount();
-    if (got <= 0) break;
-    ops::v1::LogChunk chunk;
-    chunk.set_offset(offset);
-    chunk.set_data(buffer.data(), static_cast<std::size_t>(got));
-    offset += got;
-    auto status = on_chunk(std::move(chunk));
-    if (!status.ok()) {
-      return status;
-    }
+    return stream_status;
   }
-
-  in.close();
 
   if (opts.cleanup_temp_file) {
     std::error_code ec;

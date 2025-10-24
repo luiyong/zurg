@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -18,13 +19,13 @@ class TaskContext {
  public:
   virtual ~TaskContext() = default;
   virtual bool ShouldContinue() const = 0;
-  virtual void SendLogData(const std::string& op_id, ops::v1::LogChunk chunk) = 0;
-  virtual void SendEofLog(const std::string& op_id, const ops::v1::LogFilterEof& eof) = 0;
-  virtual void SendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) = 0;
-  virtual void SendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) = 0;
-  virtual void SendError(const std::string& op_id, std::string code, std::string message) = 0;
-  virtual void SendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) = 0;
-  virtual void SendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) = 0;
+  virtual void SendLogData(std::uint32_t op_id, ops::v1::LogChunk chunk) = 0;
+  virtual void SendEofLog(std::uint32_t op_id, const ops::v1::LogFilterEof& eof) = 0;
+  virtual void SendPcapData(std::uint32_t op_id, ops::v1::PcapPacket pkt) = 0;
+  virtual void SendEofPcap(std::uint32_t op_id, const ops::v1::PcapStats& stats) = 0;
+  virtual void SendError(std::uint32_t op_id, std::string code, std::string message) = 0;
+  virtual void SendExecData(std::uint32_t op_id, ops::v1::ExecChunk chunk) = 0;
+  virtual void SendEofExec(std::uint32_t op_id, const ops::v1::ExecExit& exit) = 0;
 };
 
 class Task : public std::enable_shared_from_this<Task> {
@@ -32,10 +33,10 @@ class Task : public std::enable_shared_from_this<Task> {
   enum class Kind { kLogFilter, kPcap, kExec };
   enum class State { kPending, kRunning, kPaused, kCompleted, kCancelled, kFailed };
 
-  Task(std::string op_id, Kind kind, std::shared_ptr<spdlog::logger> logger);
+  Task(std::uint32_t op_id, Kind kind, std::shared_ptr<spdlog::logger> logger);
   virtual ~Task();
 
-  const std::string& op_id() const { return op_id_; }
+  std::uint32_t op_id() const { return op_id_; }
   Kind kind() const { return kind_; }
   State state() const { return state_.load(); }
 
@@ -51,7 +52,7 @@ class Task : public std::enable_shared_from_this<Task> {
   std::shared_ptr<spdlog::logger> logger_;
 
  private:
-  std::string op_id_;
+  std::uint32_t op_id_;
   Kind kind_;
   std::atomic<State> state_{State::kPending};
   std::atomic<bool> cancel_requested_{false};

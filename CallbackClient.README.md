@@ -67,7 +67,7 @@
 - 持有串行任务队列与执行线程。
 - 收到 `StartOp` 时：
   1. 立即回应 `OpAck(accepted=true)`。
-  2. 构造 `Task`（包含 op_id、spec、状态句柄），压入队列。
+  2. 构造 `Task`（包含 `uint32` 类型的 op_id、spec、状态句柄），压入队列。
   3. 唤醒执行线程，若空闲则马上运行。
 - 收到 `CancelOp` 时：
   - 若任务在队列中，标记取消并发送 `OpError`/`OpEof`。
@@ -85,7 +85,7 @@
 ### 4. Task Runner
 
 - **LogFilterTaskRunner**：调用 `log_ops::StreamLogFilter`，将筛选后的日志块封装为 `OpData`。
-- **PcapTaskRunner**：调用 `pcap_ops::StreamCapture` 捕获数据，生成临时 PCAP 文件并以块形式上传，最后返回 `PcapStats`。
+- **PcapTaskRunner**：调用 `pcap_ops::StreamCapture` 捕获数据，生成临时 PCAP 文件并以块形式上传（临时文件管理由 `zurg::temp_file` 统一处理），最后返回 `PcapStats`。
 - **ExecTaskRunner**：当前支持 `ip addr` 场景，枚举已 UP 的网络接口并返回结构化文本。
 - 统一接口：`Run(TaskContext&) -> TaskResult`，负责在结束时发送 `OpEof` 或 `OpError`。
 

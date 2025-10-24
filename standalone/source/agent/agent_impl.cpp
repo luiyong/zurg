@@ -16,6 +16,7 @@
 #include <chrono>
 #include <csignal>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -23,6 +24,7 @@
 #include <mutex>
 #include <optional>
 #include <string_view>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -40,6 +42,7 @@ std::once_flag g_logger_once;
 std::shared_ptr<spdlog::logger> g_logger;
 std::shared_ptr<spdlog::sinks::sink> g_logger_sink;
 std::optional<zurg::log_ops::Options> g_log_options_override;
+FeatureToggles g_feature_toggles;
 }
 
 bool IsRunning() { return g_running.load(); }
@@ -59,6 +62,7 @@ void ResetForTests() {
   {
     std::lock_guard<std::mutex> lock(g_hook_mu);
     g_log_options_override.reset();
+    g_feature_toggles = FeatureToggles{};
   }
 }
 
@@ -90,6 +94,16 @@ void SetLogOptionsForTests(zurg::log_ops::Options opts) {
 std::optional<zurg::log_ops::Options> GetLogOptionsOverride() {
   std::lock_guard<std::mutex> lock(g_hook_mu);
   return g_log_options_override;
+}
+
+static FeatureToggles GetFeatureTogglesInternal() {
+  std::lock_guard<std::mutex> lock(g_hook_mu);
+  return g_feature_toggles;
+}
+
+static void SetFeatureTogglesInternal(FeatureToggles toggles) {
+  std::lock_guard<std::mutex> lock(g_hook_mu);
+  g_feature_toggles = std::move(toggles);
 }
 
 std::shared_ptr<spdlog::logger> GetLogger() {
@@ -179,6 +193,14 @@ ops::v1::AgentToServer MakeRejectAck(const ops::v1::StartOp& start) {
 
 }  // namespace internal
 
+FeatureToggles GetFeatureToggles() {
+  return internal::GetFeatureTogglesInternal();
+}
+
+void SetFeatureToggles(FeatureToggles toggles) {
+  internal::SetFeatureTogglesInternal(std::move(toggles));
+}
+
 void HandleSignal(int signo) {
   if (signo == SIGINT || signo == SIGTERM) {
     internal::RequestStop();
@@ -227,6 +249,7 @@ class ControlCallbackClient : public TaskContext {
  public:
   struct Options {
     zurg::log_ops::Options log_options;
+    FeatureToggles features;
     TaskShouldContinueFn should_run;
     std::function<std::chrono::milliseconds(std::size_t)> backoff_fn;
     std::function<void(std::chrono::milliseconds)> sleep_fn;
@@ -367,31 +390,31 @@ class ControlCallbackClient : public TaskContext {
     return ShouldContinueInternal();
   }
 
-  void SendLogData(const std::string& op_id, ops::v1::LogChunk chunk) override {
+  void SendLogData(std::uint32_t op_id, ops::v1::LogChunk chunk) override {
     DoSendLogData(op_id, std::move(chunk));
   }
 
-  void SendEofLog(const std::string& op_id, const ops::v1::LogFilterEof& eof) override {
+  void SendEofLog(std::uint32_t op_id, const ops::v1::LogFilterEof& eof) override {
     DoSendEofLog(op_id, eof);
   }
 
-  void SendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) override {
+  void SendPcapData(std::uint32_t op_id, ops::v1::PcapPacket pkt) override {
     DoSendPcapData(op_id, std::move(pkt));
   }
 
-  void SendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) override {
+  void SendEofPcap(std::uint32_t op_id, const ops::v1::PcapStats& stats) override {
     DoSendEofPcap(op_id, stats);
   }
 
-  void SendError(const std::string& op_id, std::string code, std::string message) override {
+  void SendError(std::uint32_t op_id, std::string code, std::string message) override {
     DoSendError(op_id, std::move(code), std::move(message));
   }
 
-  void SendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) override {
+  void SendExecData(std::uint32_t op_id, ops::v1::ExecChunk chunk) override {
     DoSendExecData(op_id, std::move(chunk));
   }
 
-  void SendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) override {
+  void SendEofExec(std::uint32_t op_id, const ops::v1::ExecExit& exit) override {
     DoSendEofExec(op_id, exit);
   }
 
@@ -423,7 +446,7 @@ class ControlCallbackClient : public TaskContext {
     MaybeStartWriteLocked();
   }
 
-  void SendAck(const std::string& op_id, bool accepted, std::string reason = std::string()) {
+  void SendAck(std::uint32_t op_id, bool accepted, std::string reason = std::string()) {
     ops::v1::AgentToServer msg;
     auto* ack = msg.mutable_ack();
     ack->set_op_id(op_id);
@@ -435,7 +458,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendError(const std::string& op_id, std::string code, std::string message) {
+  void DoSendError(std::uint32_t op_id, std::string code, std::string message) {
     ops::v1::AgentToServer msg;
     auto* err = msg.mutable_error();
     err->set_op_id(op_id);
@@ -445,7 +468,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendLogData(const std::string& op_id, ops::v1::LogChunk chunk) {
+  void DoSendLogData(std::uint32_t op_id, ops::v1::LogChunk chunk) {
     ops::v1::AgentToServer msg;
     auto* data = msg.mutable_data();
     data->set_op_id(op_id);
@@ -453,7 +476,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendPcapData(const std::string& op_id, ops::v1::PcapPacket pkt) {
+  void DoSendPcapData(std::uint32_t op_id, ops::v1::PcapPacket pkt) {
     ops::v1::AgentToServer msg;
     auto* data = msg.mutable_data();
     data->set_op_id(op_id);
@@ -461,7 +484,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendEofLog(const std::string& op_id, const ops::v1::LogFilterEof& eof) {
+  void DoSendEofLog(std::uint32_t op_id, const ops::v1::LogFilterEof& eof) {
     ops::v1::AgentToServer msg;
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
@@ -470,7 +493,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendEofPcap(const std::string& op_id, const ops::v1::PcapStats& stats) {
+  void DoSendEofPcap(std::uint32_t op_id, const ops::v1::PcapStats& stats) {
     ops::v1::AgentToServer msg;
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
@@ -479,7 +502,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendExecData(const std::string& op_id, ops::v1::ExecChunk chunk) {
+  void DoSendExecData(std::uint32_t op_id, ops::v1::ExecChunk chunk) {
     ops::v1::AgentToServer msg;
     auto* data = msg.mutable_data();
     data->set_op_id(op_id);
@@ -487,7 +510,7 @@ class ControlCallbackClient : public TaskContext {
     EnqueueWrite(std::move(msg));
   }
 
-  void DoSendEofExec(const std::string& op_id, const ops::v1::ExecExit& exit) {
+  void DoSendEofExec(std::uint32_t op_id, const ops::v1::ExecExit& exit) {
     ops::v1::AgentToServer msg;
     auto* tail = msg.mutable_eof();
     tail->set_op_id(op_id);
@@ -497,8 +520,8 @@ class ControlCallbackClient : public TaskContext {
   }
 
   void HandleStartOp(const ops::v1::StartOp& start) {
-    const std::string op_id = start.meta().op_id();
-    if (op_id.empty()) {
+    const std::uint32_t op_id = start.meta().op_id();
+    if (op_id == 0) {
       if (logger_) {
         logger_->warn("received StartOp with missing op_id");
       }
@@ -525,10 +548,31 @@ class ControlCallbackClient : public TaskContext {
       }
 
       if (start.has_log_filter()) {
+        if (!options_.features.enable_log_filter) {
+          if (logger_) {
+            logger_->warn("reject StartOp op_id={} reason=log_filter_disabled", op_id);
+          }
+          SendAck(op_id, false, "log filter disabled");
+          return;
+        }
         task = std::make_shared<LogFilterTask>(op_id, start.log_filter(), options_.log_options, logger_);
       } else if (start.has_pcap()) {
+        if (!options_.features.enable_pcap) {
+          if (logger_) {
+            logger_->warn("reject StartOp op_id={} reason=pcap_disabled", op_id);
+          }
+          SendAck(op_id, false, "pcap disabled");
+          return;
+        }
         task = std::make_shared<PcapTask>(op_id, start.pcap(), options_.log_options, logger_);
       } else if (start.has_exec()) {
+        if (!options_.features.enable_exec) {
+          if (logger_) {
+            logger_->warn("reject StartOp op_id={} reason=exec_disabled", op_id);
+          }
+          SendAck(op_id, false, "exec disabled");
+          return;
+        }
         task = std::make_shared<ExecTask>(op_id, start.exec(), logger_);
       } else {
         if (logger_) {
@@ -559,7 +603,7 @@ class ControlCallbackClient : public TaskContext {
     task_cv_.notify_all();
   }
 
-  void HandleCancel(const std::string& op_id) {
+  void HandleCancel(std::uint32_t op_id) {
     std::shared_ptr<Task> target;
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -599,7 +643,7 @@ class ControlCallbackClient : public TaskContext {
   void HandleShutdown(const ops::v1::Shutdown& shutdown) {
     const bool drain = shutdown.drain();
     ControlStreamReactor* reactor_to_cancel = nullptr;
-    std::vector<std::string> cancelled_ops;
+    std::vector<std::uint32_t> cancelled_ops;
     {
       std::lock_guard<std::mutex> lock(mu_);
       drain_mode_ = drain;
@@ -646,10 +690,11 @@ class ControlCallbackClient : public TaskContext {
 
   void CancelAllLocked(std::string_view reason) {
     if (logger_) {
+      std::string current = current_task_ ? std::to_string(current_task_->op_id()) : "none";
       logger_->warn("cancelling all tasks reason={} queue_size={} current={}", reason,
-                    task_queue_.size(), current_task_ ? current_task_->op_id() : "none");
+                    task_queue_.size(), current);
     }
-    std::vector<std::string> cancelled_ops;
+    std::vector<std::uint32_t> cancelled_ops;
     for (auto it = tasks_.begin(); it != tasks_.end();) {
       auto& task = it->second;
       if (!task) {
@@ -763,7 +808,7 @@ class ControlCallbackClient : public TaskContext {
 
   std::condition_variable task_cv_;
   std::deque<std::shared_ptr<Task>> task_queue_;
-  std::unordered_map<std::string, std::shared_ptr<Task>> tasks_;
+  std::unordered_map<std::uint32_t, std::shared_ptr<Task>> tasks_;
   std::shared_ptr<Task> current_task_;
   bool drain_mode_ = false;
   bool stop_worker_ = false;
@@ -838,6 +883,7 @@ void StartAgent(ops::v1::Control::StubInterface* stub, const std::string& agent_
   if (auto override_opts = internal::GetLogOptionsOverride()) {
     options.log_options = *override_opts;
   }
+  options.features = GetFeatureToggles();
 
   ControlCallbackClient client(stub, agent_id, options);
   client.Run();

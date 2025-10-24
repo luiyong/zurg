@@ -15,7 +15,15 @@
 
 namespace zurg { namespace agent {
 
+struct FeatureToggles {
+  bool enable_log_filter = true;
+  bool enable_pcap = true;
+  bool enable_exec = true;
+};
+
 void StartAgent(ops::v1::Control::StubInterface* stub, const std::string& agent_id);
+void SetFeatureToggles(FeatureToggles toggles);
+FeatureToggles GetFeatureToggles();
 
 namespace internal {
 

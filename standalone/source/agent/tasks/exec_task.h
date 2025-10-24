@@ -2,11 +2,13 @@
 
 #include "tasks/task.h"
 
+#include <cstdint>
+
 namespace zurg::agent::tasks {
 
 class ExecTask : public Task {
  public:
-  ExecTask(const std::string& op_id,
+  ExecTask(std::uint32_t op_id,
            const ops::v1::ExecSpec& spec,
            std::shared_ptr<spdlog::logger> logger);
 
@@ -19,4 +21,3 @@ class ExecTask : public Task {
 using ExecTaskPtr = std::shared_ptr<ExecTask>;
 
 }  // namespace zurg::agent::tasks
-

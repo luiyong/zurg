@@ -4,7 +4,7 @@
 
 namespace zurg::agent::tasks {
 
-LogFilterTask::LogFilterTask(const std::string& op_id,
+LogFilterTask::LogFilterTask(std::uint32_t op_id,
                              const ops::v1::LogFilterSpec& spec,
                              const zurg::log_ops::Options& options,
                              std::shared_ptr<spdlog::logger> logger)
@@ -41,4 +41,3 @@ void LogFilterTask::Run(TaskContext& ctx) {
 }
 
 }  // namespace zurg::agent::tasks
-

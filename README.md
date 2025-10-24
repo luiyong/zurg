@@ -18,6 +18,7 @@ Zurg 提供了一套用于实现 gNOI Agent 的 C++ 组件与示例程序，涵�
 | `zurg::log_ops` | 按 BPF/时间范围/关键字过滤日志文件，支持回放与 chunk 上报。 |
 | `zurg::pcap_ops` | 基于 libpcap 或合成数据源抓包，返回统计信息与 packet 序列。 |
 | `zurg::logging::LoggerManager` | 统一管理 spdlog logger，支持动态增删 sink、按名称调级以及测试覆写。 |
+| `zurg::temp_file` | 提供临时目录解析、唯一文件名生成与按块回读工具，供日志过滤与抓包模块复用。 |
 | `standalone::agent` | gRPC Callback 客户端，串行调度 `LogFilter`、`Pcap`、`Exec` 任务，支持重试与 cancel。 |
 
 更多设计细节可查看 `LogManager.README.md` 与 `CallbackClient.README.md`。
@@ -58,10 +59,30 @@ Usage:
 Options:
   -t, --target   gRPC 控制面地址（默认 127.0.0.1:50051）
   -a, --agent_id 自定义 Agent ID；未提供时自动生成 agent-<timestamp>
+  -c, --config   YAML 配置文件路径（例如 standalone/config/zurg_agent.yaml）
   -h, --help     打印帮助信息
 ```
 
 代理会在启动时发送 `AgentHello` 并进入控制循环，串行执行 `LogFilter / Pcap / Exec` 任务，相关日志通过 `LoggerManager` 输出。
+
+### 配置功能开关
+
+`zurg_agent` 支持通过 YAML 配置文件关闭某些运维功能，防止在受限环境中执行敏感任务。示例配置见
+`standalone/config/zurg_agent.yaml`：
+
+```yaml
+features:
+  log_filter: true   # 是否允许日志过滤任务
+  pcap: true         # 是否允许 PCAP 抓包任务
+  exec: true         # 是否允许命令执行任务
+```
+
+启动时通过 `--config` 指定配置文件，Agent 会在运行前打印当前生效的功能开关。未指定配置时，以上功能默认全部启用。
+
+### 协议约定
+
+- 控制通道中的 `op_id` 统一使用 `uint32` 类型，Agent 将数值直接作为任务索引及去重键，避免字符串比较的额外开销。
+- 日志过滤与抓包操作仍按“先写临时文件、再按块回读上传”的流程执行，临时文件管理由 `zurg::temp_file` 工具负责，可在其上扩展后续压缩等能力。
 
 ### 运行测试
 
@@ -117,4 +138,3 @@ cmake --build build/test --target check-format
 ```
 
 以确保基础测试与格式检查通过。
-

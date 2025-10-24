@@ -1,0 +1,5 @@
+# 示例配置：通过开关控制 Agent 可执行的运维功能
+features:
+  log_filter: true
+  pcap: true
+  exec: true

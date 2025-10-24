@@ -12,7 +12,7 @@ import "google/protobuf/timestamp.proto";
 // ===================== Common =====================
 
 message OperationMeta {
-  string op_id  = 1; // 由 Server 指定，全局唯一，幂等与关联
+  uint32 op_id  = 1; // 由 Server 指定，全局唯一，幂等与关联
   string tenant = 2;
   string actor  = 3; // 谁发起（审计）
 }
@@ -69,7 +69,7 @@ message StartOp {
   }
 }
 
-message CancelOp { string op_id = 1; }  // 要求 Agent 立即停止对应操作（尽量可中断）
+message CancelOp { uint32 op_id = 1; }  // 要求 Agent 立即停止对应操作（尽量可中断）
 message Shutdown { bool drain = 1; }    // drain=true 则待所有操作完成后退出
 
 // ========== Agent -> Server（响应/结果） ==========
@@ -88,12 +88,12 @@ message AgentToServer {
   }
 }
 
-message OpAck { string op_id = 1; bool accepted = 2; string reason = 3; }
-message OpLog { string op_id = 1; LogLine line = 2; }
-message OpProgress { string op_id = 1; uint32 pct = 2; string note = 3; }
+message OpAck { uint32 op_id = 1; bool accepted = 2; string reason = 3; }
+message OpLog { uint32 op_id = 1; LogLine line = 2; }
+message OpProgress { uint32 op_id = 1; uint32 pct = 2; string note = 3; }
 
 message OpData {
-  string op_id = 1;
+  uint32 op_id = 1;
 
   oneof payload {
     // 替换：原 FileChunk -> 日志分块（同样 offset + data）
@@ -104,7 +104,7 @@ message OpData {
 }
 
 message OpEof {
-  string op_id = 1;
+  uint32 op_id = 1;
   // 不同操作可带不同的“收尾信息”
   oneof trailer {
     // 替换：原 FileGetEof -> 日志过滤结果收尾信息
@@ -114,7 +114,7 @@ message OpEof {
   }
 }
 
-message OpError { string op_id = 1; string code = 2; string message = 3; }
+message OpError { uint32 op_id = 1; string code = 2; string message = 3; }
 
 // ===================== 日志：按时间过滤并下载 =====================
 //

@@ -9,11 +9,18 @@
   - @ref zurg::pcap_ops "PCAP 抓包"：使用 libpcap 或合成源生成 Packet/Stats，支持应答取消。
   - @ref zurg::logging::LoggerManager "Logger 管理"：统一 spdlog sink 与日志级别，适合测试钩子。
   - Agent Callback 客户端：利用 gRPC Callback API 处理 `Control.Connect`，支持自动重连与任务队列。
+  - zurg::temp_file：封装临时目录创建、唯一文件命名及按块回读逻辑，供日志过滤与抓包任务共享。
+  - YAML 配置：通过 `features` 开关选择是否启用日志过滤、PCAP 抓包及命令执行。
 
   @section build 构建与测试
   - 核心库：`cmake -S . -B build && cmake --build build`
   - Agent：`cmake -S standalone -B build/standalone`
   - 测试：`cmake -S test -B build/test && cmake --build build/test --target test`
+  - 配置：运行时通过 `zurg_agent --config /path/to/zurg_agent.yaml` 载入功能开关。
+
+  @section protocol 协议要点
+  - 控制通道中的 `op_id` 统一使用 `uint32`，Agent 以数值索引任务并进行去重。
+  - 日志过滤与抓包操作仍遵循“先写临时文件、再读取上传”的流程，临时文件由 `zurg::temp_file` 统一管理，可在此基础上扩展压缩等能力。
 
   @section doc 文档
   使用 `cmake -S documentation -B build/docs && cmake --build build/docs --target GenerateDocs`
