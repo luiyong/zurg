@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14...3.22)
 
-project(GreeterTests LANGUAGES CXX)
+project(ZurgTests LANGUAGES CXX)
 
 # ---- Options ----
 
@@ -27,8 +27,6 @@ if (NOT Protobuf_PROTOC_EXECUTABLE AND TARGET protobuf::protoc)
   set(Protobuf_PROTOC_EXECUTABLE ${_PROTOC_LOCATION})
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-find_package(fmt REQUIRED)
-find_package(OpenSSL REQUIRED)
 find_package(gRPC CONFIG QUIET)
 find_package(PkgConfig REQUIRED)
 set(GRPCPP_LINK_LIBS "")
@@ -38,7 +36,10 @@ set(GRPCPP_LIBRARY_DIRS_RES "")
 if(gRPC_FOUND)
   list(APPEND GRPCPP_LINK_LIBS gRPC::grpc++)
 else()
-  pkg_check_modules(GRPCPP REQUIRED grpc++)
+  pkg_check_modules(GRPCPP QUIET grpc++)
+  if(NOT GRPCPP_FOUND)
+    message(FATAL_ERROR "gRPC++ (with re2) not found; install libgrpc++-dev or provide pkg-config metadata")
+  endif()
   list(APPEND GRPCPP_LINK_LIBS ${GRPCPP_LIBRARIES})
   list(APPEND GRPCPP_INCLUDE_DIRS_RES ${GRPCPP_INCLUDE_DIRS})
   list(APPEND GRPCPP_COMPILE_OPTS ${GRPCPP_CFLAGS_OTHER})
@@ -141,7 +142,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${OS_GRPC_PROTO_SRC}
 )
 target_compile_definitions(${PROJECT_NAME} PRIVATE GRPC_CALLBACK_API_NONEXPERIMENTAL=1)
-target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf fmt::fmt OpenSSL::Crypto)
+target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf)
 if(spdlog_FOUND)
   target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog_header_only)
 endif()
@@ -151,7 +152,7 @@ endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${GRPCPP_LINK_LIBS})
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
 
-# 这里不设置上层 Greeter 目标的编译选项，避免依赖上层工程
+# 这里不设置上层 zurg 目标的编译选项，避免依赖上层工程
 
 # ---- 代码覆盖率配置 ----
 if (ENABLE_TEST_COVERAGE)
@@ -160,7 +161,7 @@ if (ENABLE_TEST_COVERAGE)
   target_link_options(${PROJECT_NAME} PRIVATE --coverage)
 endif()
 
-# ---- Add GreeterTests ----
+# ---- Add ZurgTests ----
 
 enable_testing()
 include(GoogleTest)
