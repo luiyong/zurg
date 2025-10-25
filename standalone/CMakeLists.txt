@@ -62,6 +62,8 @@ endif()
 set(agent_sources
   ${CMAKE_CURRENT_SOURCE_DIR}/source/agent_main.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/agent/agent_impl.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/agent/control/control_stream_client.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/agent/control/control_callback_client.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/agent/tasks/task.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/agent/tasks/log_filter_task.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/agent/tasks/pcap_task.cpp

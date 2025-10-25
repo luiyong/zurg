@@ -651,4 +651,109 @@ TEST_F(CallbackAgentIntegrationTest, RespondsToPingWithPong) {
   }
 }
 
+TEST_F(CallbackAgentIntegrationTest, HandlesSyntheticPcapTask) {
+  using namespace std::chrono_literals;
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  ops::v1::PcapSpec spec;
+  spec.set_packet_limit(3);
+  spec.set_snaplen(64);
+  spec.set_payload_trim_bytes(32);
+
+  ASSERT_TRUE(service_.SendPcapStart(101, spec));
+  ASSERT_TRUE(service_.WaitForMessages(6, 3000ms));
+
+  auto messages = service_.SnapshotMessages();
+  bool saw_ack = false;
+  int data_count = 0;
+  bool saw_eof = false;
+  for (const auto& msg : messages) {
+    if (msg.msg_case() == ops::v1::AgentToServer::kAck && msg.ack().op_id() == 101) {
+      if (msg.ack().accepted()) {
+        saw_ack = true;
+      }
+    }
+    if (msg.msg_case() == ops::v1::AgentToServer::kData && msg.data().has_log_chunk() &&
+        msg.data().op_id() == 101) {
+      ++data_count;
+    }
+    if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().has_pcap() &&
+        msg.eof().op_id() == 101) {
+      saw_eof = true;
+    }
+  }
+
+  EXPECT_TRUE(saw_ack);
+  EXPECT_GE(data_count, 1);
+  EXPECT_TRUE(saw_eof);
+
+  ASSERT_TRUE(service_.SendShutdown(false));
+  ASSERT_TRUE(service_.WaitForDone(2000ms));
+
+  zurg::agent::internal::RequestStop();
+  agent_thread_.join();
+}
+
+TEST_F(CallbackAgentIntegrationTest, ShutdownDrainCompletesPendingTasks) {
+  using namespace std::chrono_literals;
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  namespace fs = std::filesystem;
+  fs::path base_log = log_dir_ / "agent.log";
+  {
+    std::ofstream os(base_log);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.callback] [info] keep-drain" << std::endl;
+  }
+
+  ops::v1::LogFilterSpec spec;
+  spec.add_level_in("info");
+  spec.set_grep_contains("keep");
+  google::protobuf::Timestamp start_time;
+  google::protobuf::Timestamp end_time;
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T10:55:00Z", &start_time));
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T11:05:00Z", &end_time));
+  *spec.mutable_start_time() = start_time;
+  *spec.mutable_end_time() = end_time;
+
+  ASSERT_TRUE(service_.SendLogFilterStart(201, spec));
+  ASSERT_TRUE(service_.WaitForMessages(2, 2000ms));
+
+  ASSERT_TRUE(service_.SendShutdown(true));
+  ASSERT_TRUE(service_.WaitForMessages(4, 2000ms));
+
+  auto messages = service_.SnapshotMessages();
+  std::size_t ack_index = std::numeric_limits<std::size_t>::max();
+  std::size_t eof_index = std::numeric_limits<std::size_t>::max();
+  for (std::size_t i = 0; i < messages.size(); ++i) {
+    const auto& msg = messages[i];
+    if (msg.msg_case() == ops::v1::AgentToServer::kAck && msg.ack().op_id() == 201 &&
+        msg.ack().accepted()) {
+      ack_index = std::min(ack_index, i);
+    }
+    if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().has_log() &&
+        msg.eof().op_id() == 201) {
+      eof_index = std::min(eof_index, i);
+    }
+  }
+
+  EXPECT_NE(ack_index, std::numeric_limits<std::size_t>::max());
+  EXPECT_NE(eof_index, std::numeric_limits<std::size_t>::max());
+  EXPECT_LT(ack_index, eof_index);
+
+  ASSERT_TRUE(service_.ForceCloseStream());
+  ASSERT_TRUE(service_.WaitForDone(2000ms));
+
+  zurg::agent::internal::RequestStop();
+  if (agent_thread_.joinable()) {
+    agent_thread_.join();
+  }
+}
+
 }  // namespace

@@ -12,6 +12,7 @@
 #include <string>
 
 #include <memory>
+#include <spdlog/logger.h>
 #include <spdlog/sinks/sink.h>
 
 namespace zurg { namespace agent {

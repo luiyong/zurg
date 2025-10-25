@@ -109,6 +109,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/exec_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/control/control_stream_client.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/control/control_callback_client.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_client_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_manager_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/persistence_test.cpp
