@@ -181,7 +181,6 @@ TEST(LogOpsInternalTest, FilterLogsToTempProducesMetrics) {
   opts.log_root = tmp.path().string();
   opts.temp_dir = tmp.path().string();
   opts.base_path = "agent.log";
-  opts.cleanup_temp_file = false;
 
   ops::v1::LogFilterSpec spec;
   google::protobuf::Timestamp start_ts;
@@ -225,7 +224,6 @@ TEST(LogOpsInternalTest, StreamFileCancellationPropagates) {
   opts.log_root = tmp.path().string();
   opts.temp_dir = tmp.path().string();
   opts.base_path = "agent.log";
-  opts.cleanup_temp_file = false;
 
   ops::v1::LogFilterSpec spec;
   google::protobuf::Timestamp start_ts;

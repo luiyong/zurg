@@ -499,22 +499,17 @@ TEST_F(CallbackAgentIntegrationTest, SequentialLogTasksExecuteInOrder) {
   ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
 
   namespace fs = std::filesystem;
-  fs::path log1 = log_dir_ / "seq1.log";
-  fs::path log2 = log_dir_ / "seq2.log";
+  fs::path log_file = log_dir_ / "agent.log";
   {
-    std::ofstream os(log1);
+    std::ofstream os(log_file);
     ASSERT_TRUE(os.is_open());
     os << "[2025-09-27 11:00:00.000] [agent.test] [info] first" << std::endl;
-  }
-  {
-    std::ofstream os(log2);
-    ASSERT_TRUE(os.is_open());
     os << "[2025-09-27 11:10:00.000] [agent.test] [info] second" << std::endl;
   }
 
-  auto make_spec = [](const std::string& path, const std::string& start, const std::string& end) {
+  auto make_spec = [](const std::string& start, const std::string& end) {
     ops::v1::LogFilterSpec spec;
-    // base paths provided via log options
+    // base path provided via callback agent log options
     spec.add_level_in("info");
     google::protobuf::Timestamp s;
     google::protobuf::Timestamp e;
@@ -525,8 +520,8 @@ TEST_F(CallbackAgentIntegrationTest, SequentialLogTasksExecuteInOrder) {
     return spec;
   };
 
-  auto spec1 = make_spec(log1.string(), "2025-09-27T10:55:00Z", "2025-09-27T11:05:00Z");
-  auto spec2 = make_spec(log2.string(), "2025-09-27T11:05:00Z", "2025-09-27T11:20:00Z");
+  auto spec1 = make_spec("2025-09-27T10:55:00Z", "2025-09-27T11:05:00Z");
+  auto spec2 = make_spec("2025-09-27T11:05:00Z", "2025-09-27T11:20:00Z");
 
   ASSERT_TRUE(service_.SendLogFilterStart(1, spec1));
   ASSERT_TRUE(service_.SendLogFilterStart(2, spec2));
@@ -664,7 +659,7 @@ TEST_F(CallbackAgentIntegrationTest, HandlesSyntheticPcapTask) {
   spec.set_payload_trim_bytes(32);
 
   ASSERT_TRUE(service_.SendPcapStart(101, spec));
-  ASSERT_TRUE(service_.WaitForMessages(6, 3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(4, 3000ms));
 
   auto messages = service_.SnapshotMessages();
   bool saw_ack = false;

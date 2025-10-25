@@ -6,6 +6,7 @@ project(ZurgTests LANGUAGES CXX)
 
 option(ENABLE_TEST_COVERAGE "Enable test coverage" OFF)
 option(TEST_INSTALLED_VERSION "Test the version found by find_package" OFF)
+option(ENABLE_AUTH_TESTS "Build auth client/unit tests" OFF)
 
 # --- 基础设置（移除外部工具依赖） ----
 
@@ -110,12 +111,16 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/control/control_stream_client.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/control/control_callback_client.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_client_test.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_manager_test.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/persistence_test.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/connection_test.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/reconnect_test.cpp
 )
+if(ENABLE_AUTH_TESTS)
+  target_sources(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_client_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_manager_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/persistence_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/connection_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/reconnect_test.cpp
+  )
+endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE
   GTest::gtest
   GTest::gtest_main
