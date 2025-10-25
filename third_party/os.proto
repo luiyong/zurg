@@ -118,28 +118,22 @@ message OpError { uint32 op_id = 1; string code = 2; string message = 3; }
 
 // ===================== 日志：按时间过滤并下载 =====================
 //
-// Server 下发时间窗口与输入日志路径（及可选过滤），
-// Agent 本地合并匹配的日志（含轮转），写入临时文件，再以分块形式回传。
+// Server 下发时间窗口与过滤条件，Agent 侧根据本地配置的日志路径/轮转策略
+// 合并匹配的日志（含轮转），写入临时文件，再以分块形式回传。
 // （也可仅返回元数据，由 Server 触发后续下载；此处默认直接随流回传）
 message LogFilterSpec {
-  // 基础输入
-  string base_path = 1;  // 例如 /var/log/agent.log （Agent 侧按约定自动探测 agent.log.1、agent.log.2...）
-  bool   include_rotations = 2; // 是否包含轮转文件（如 .1/.2）
-  uint32 rotation_scan_depth = 3; // 向老的轮转最多扫描多少个（默认 2 或 3）
-
   // 时间窗口（闭区间/左闭右闭，Agent 侧实现需文档化；建议按 >=start 且 <=end）
-  google.protobuf.Timestamp start_time = 4;
-  google.protobuf.Timestamp end_time   = 5;
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time   = 2;
 
   // 可选过滤
-  repeated string level_in = 6;   // 例如 ["info","warn","error"]，大小写由 Agent 约定
-  string grep_contains     = 7;   // 简单包含匹配（或由 Agent 提供更强的正则，另行扩展）
+  repeated string level_in = 3;   // 例如 ["info","warn","error"]，大小写由 Agent 约定
+  string grep_contains     = 4;   // 简单包含匹配（或由 Agent 提供更强的正则，另行扩展）
   // 若你需要按模块/线程等字段进一步过滤，可后续扩展更多字段
 
   // 输出控制
-  bool   compress = 8;           // 是否在 Agent 本地 gzip 后再回传
-  uint64 max_output_bytes = 9;   // Agent 侧对输出文件的硬限制，0 表示不限
-  string output_basename  = 10;  // 临时文件的建议名（Agent 可追加 .gz 等后缀）
+  bool   compress = 5;           // 是否在 Agent 本地 gzip 后再回传
+  uint64 max_output_bytes = 6;   // Agent 侧对输出文件的硬限制，0 表示不限
 }
 
 // 与文件分块类似的回传格式

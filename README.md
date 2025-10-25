@@ -72,17 +72,34 @@ Options:
 
 ```yaml
 features:
+  enabled: true
   log_filter: true   # 是否允许日志过滤任务
   pcap: true         # 是否允许 PCAP 抓包任务
   exec: true         # 是否允许命令执行任务
+
+logging:
+  file: "/var/log/zurg/agent.log"
+  max_files: 5              # 轮转文件数量
+  max_size_bytes: 10485760  # 单文件大小上限（字节）
+
+log_filter:
+  base_path: "/var/log/zurg/agent.log"
+  log_root: ""              # 可选：限制可访问的日志根目录
+  temp_dir: "/tmp"          # 临时文件目录
+  include_rotations: true
+  rotation_scan_depth: 2
+  output_basename: "filtered"
+  chunk_size: 65536
+  cleanup_temp_file: true
 ```
 
-启动时通过 `--config` 指定配置文件，Agent 会在运行前打印当前生效的功能开关。未指定配置时，以上功能默认全部启用。
+启动时通过 `--config` 指定配置文件，Agent 会在运行前打印当前生效的功能开关。`features.enabled=false` 将直接关闭所有运维任务，其余开关可独立控制。未指定配置时，各功能默认开启，但日志过滤需在配置中提供 `log_filter.base_path` 后方可运行。
 
 ### 协议约定
 
 - 控制通道中的 `op_id` 统一使用 `uint32` 类型，Agent 将数值直接作为任务索引及去重键，避免字符串比较的额外开销。
 - 日志过滤与抓包操作仍按“先写临时文件、再按块回读上传”的流程执行，临时文件管理由 `zurg::temp_file` 工具负责，可在其上扩展后续压缩等能力。
+- `LogFilterSpec` 仅携带时间窗口与内容过滤条件，实际日志路径、轮转深度等由配置文件中的 `log_filter.*` 控制。
 
 ### 运行测试
 
@@ -122,7 +139,7 @@ cmake --build build/docs --target GenerateDocs
 
 - `cmake/fix_grpc_namespace.py` 会在生成 gRPC 代码后修正命名空间以契合项目布局；若调整 `.proto`，请保持该脚本同步。
 - `zurg::agent::internal` 暴露大量 `Set*ForTests` 钩子，可在单元测试或实验场景下自定义回退策略、发送行为、日志输出。
-- `LoggerManager` 默认以懒加载方式创建 logger，测试中可通过 `SetLoggerSinkForTests` 注入自定义 sink 捕获输出。
+- `LoggerManager` 默认以懒加载方式创建 logger，测试或运行时可通过 `SetAdditionalLoggerSink` 注入自定义 sink 捕获输出。
 
 ## 许可证
 

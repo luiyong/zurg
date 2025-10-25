@@ -14,6 +14,7 @@ class LogFilterTask : public Task {
                 const zurg::log_ops::Options& options,
                 std::shared_ptr<spdlog::logger> logger);
 
+  bool Validate(std::string* reason) const override;
   void Run(TaskContext& ctx) override;
 
  private:

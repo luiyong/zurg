@@ -21,6 +21,7 @@
   @section protocol 协议要点
   - 控制通道中的 `op_id` 统一使用 `uint32`，Agent 以数值索引任务并进行去重。
   - 日志过滤与抓包操作仍遵循“先写临时文件、再读取上传”的流程，临时文件由 `zurg::temp_file` 统一管理，可在此基础上扩展压缩等能力。
+  - `LogFilterSpec` 只包含时间窗口与内容过滤条件；日志路径、轮转深度等细节通过配置文件的 `log_filter.*` 字段指定。
 
   @section doc 文档
   使用 `cmake -S documentation -B build/docs && cmake --build build/docs --target GenerateDocs`

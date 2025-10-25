@@ -7,6 +7,7 @@
 #include "zurg/log_ops.h"
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -16,6 +17,7 @@
 namespace zurg { namespace agent {
 
 struct FeatureToggles {
+  bool enabled = true;
   bool enable_log_filter = true;
   bool enable_pcap = true;
   bool enable_exec = true;
@@ -36,8 +38,8 @@ void ClearTestHooks();
 std::chrono::milliseconds ComputeBackoff(std::size_t attempt);
 void SleepWithStop(std::chrono::milliseconds delay);
 void SetSendHookForTests(std::function<void(const ops::v1::AgentToServer&)> hook);
-void SetLoggerSinkForTests(std::shared_ptr<spdlog::sinks::sink> sink);
-void SetLogOptionsForTests(zurg::log_ops::Options opts);
+void SetAdditionalLoggerSink(std::shared_ptr<spdlog::sinks::sink> sink);
+void SetLogOptions(zurg::log_ops::Options opts);
 
 }  // namespace internal
 

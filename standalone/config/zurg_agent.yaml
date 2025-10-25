@@ -1,5 +1,19 @@
-# 示例配置：通过开关控制 Agent 可执行的运维功能
+# 示例配置：通过开关控制 Agent 可执行的运维功能与日志行为
 features:
+  enabled: true
   log_filter: true
   pcap: true
   exec: true
+
+logging:
+  file: "/var/log/zurg/agent.log"
+  max_files: 5                # 同步用于日志过滤的轮转扫描深度
+  max_size_bytes: 10485760  # 10 MiB
+
+log_filter:
+  log_root: ""               # 可选：限制可访问的日志根目录
+  temp_dir: "/tmp"
+  include_rotations: true
+  output_basename: "filtered"
+  chunk_size: 65536
+  cleanup_temp_file: true

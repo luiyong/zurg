@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <string_view>
 
 #include "zurg/pcap_ops.h"
@@ -63,7 +64,8 @@ void PcapTask::Run(TaskContext& ctx) {
   }
   fs::path temp_file;
   try {
-    temp_file = zurg::temp_file::CreateUniquePath(temp_dir, "pcap-" + op_id() + "-", ".pcap");
+    temp_file = zurg::temp_file::CreateUniquePath(temp_dir,
+                                                  "pcap-" + std::to_string(op_id()) + "-", ".pcap");
   } catch (const std::exception& ex) {
     SetState(State::kFailed);
     ctx.SendError(op_id(), "INTERNAL", ex.what());

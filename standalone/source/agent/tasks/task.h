@@ -46,6 +46,8 @@ class Task : public std::enable_shared_from_this<Task> {
   bool PauseRequested() const { return pause_requested_.load(); }
   void SetState(State state) { state_.store(state); }
 
+  virtual bool Validate(std::string* reason) const { (void)reason; return true; }
+
   virtual void Run(TaskContext& ctx) = 0;
 
  protected:

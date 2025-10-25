@@ -86,7 +86,7 @@ std::function<void(const ops::v1::AgentToServer&)> GetSendHook() {
   return g_send_hook;
 }
 
-void SetLogOptionsForTests(zurg::log_ops::Options opts) {
+void SetLogOptions(zurg::log_ops::Options opts) {
   std::lock_guard<std::mutex> lock(g_hook_mu);
   g_log_options_override = std::move(opts);
 }
@@ -102,6 +102,11 @@ static FeatureToggles GetFeatureTogglesInternal() {
 }
 
 static void SetFeatureTogglesInternal(FeatureToggles toggles) {
+  if (!toggles.enabled) {
+    toggles.enable_log_filter = false;
+    toggles.enable_pcap = false;
+    toggles.enable_exec = false;
+  }
   std::lock_guard<std::mutex> lock(g_hook_mu);
   g_feature_toggles = std::move(toggles);
 }
@@ -119,7 +124,7 @@ std::shared_ptr<spdlog::logger> GetLogger() {
   return g_logger;
 }
 
-void SetLoggerSinkForTests(std::shared_ptr<spdlog::sinks::sink> sink) {
+void SetAdditionalLoggerSink(std::shared_ptr<spdlog::sinks::sink> sink) {
   std::lock_guard<std::mutex> lock(g_hook_mu);
   g_logger_sink = std::move(sink);
 }
@@ -582,6 +587,20 @@ class ControlCallbackClient : public TaskContext {
         return;
       }
 
+    }
+
+    std::string validation_error;
+    if (!task->Validate(&validation_error)) {
+      if (logger_) {
+        logger_->warn("reject StartOp op_id={} reason={}", op_id,
+                      validation_error.empty() ? "invalid parameters" : validation_error);
+      }
+      SendAck(op_id, false, validation_error.empty() ? "invalid parameters" : validation_error);
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mu_);
       tasks_[op_id] = task;
       task_queue_.push_back(task);
     }

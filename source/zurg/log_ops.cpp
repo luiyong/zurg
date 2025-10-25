@@ -1,5 +1,8 @@
 #include "zurg/log_ops.h"
 
+#include "zurg/log_ops_internal.h"
+#include "zurg/temp_file.h"
+
 #include <google/protobuf/util/time_util.h>
 
 #include <algorithm>
@@ -15,16 +18,10 @@
 #include <vector>
 #include <ctime>
 
-#include "zurg/temp_file.h"
-
 namespace zurg::log_ops {
-namespace {
 namespace fs = std::filesystem;
 
-struct Root {
-  bool enabled = false;
-  fs::path canonical;
-};
+namespace internal {
 
 std::optional<Root> MakeRoot(const std::string& root_dir) {
   if (root_dir.empty()) return Root{};
@@ -67,6 +64,34 @@ std::optional<fs::path> ResolvePath(const Root& root, const std::string& user_pa
   return normalized;
 }
 
+std::vector<fs::path> EnumerateCandidates(const fs::path& base_path,
+                                          bool include_rotations,
+                                          std::uint32_t rotation_depth) {
+  std::vector<fs::path> candidates;
+  candidates.push_back(base_path);
+  if (!include_rotations) return candidates;
+
+  std::uint32_t depth = rotation_depth == 0 ? 2u : rotation_depth;
+  auto parent = base_path.parent_path();
+  auto stem = base_path.filename().string();
+  auto ext = base_path.extension().string();
+  auto stem_no_ext = base_path.stem().string();
+  for (std::uint32_t i = 1; i <= depth; ++i) {
+    candidates.push_back(base_path.string() + "." + std::to_string(i));
+    if (!ext.empty()) {
+      fs::path rotated = parent / (stem_no_ext + "." + std::to_string(i) + ext);
+      candidates.push_back(rotated);
+    }
+  }
+  return candidates;
+}
+
+struct ParsedLine {
+  google::protobuf::Timestamp ts;
+  std::string level_lower;
+  std::string_view message;
+};
+
 std::string ToLower(std::string_view in) {
   std::string out;
   out.reserve(in.size());
@@ -75,12 +100,6 @@ std::string ToLower(std::string_view in) {
   }
   return out;
 }
-
-struct ParsedLine {
-  google::protobuf::Timestamp ts;
-  std::string level_lower;
-  std::string_view message;
-};
 
 bool ParseSpdlogLine(std::string_view line, ParsedLine* parsed) {
   if (line.size() < 22 || line.front() != '[') return false;
@@ -183,51 +202,22 @@ bool ContainsFilter(std::string_view haystack, const std::string& needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
-::grpc::Status MakeError(::grpc::StatusCode code, std::string msg) {
-  return ::grpc::Status(code, std::move(msg));
+::grpc::Status MakeError(::grpc::StatusCode code, std::string message) {
+  return ::grpc::Status(code, std::move(message));
 }
 
-}  // namespace
-
-::grpc::Status StreamLogFilter(const Options& opts,
-                               const ops::v1::LogFilterSpec& spec,
-                               const ShouldStopFn& should_stop,
-                               const LogChunkConsumer& on_chunk,
-                               ops::v1::LogFilterEof* eof) {
-  if (!eof) return MakeError(::grpc::StatusCode::INVALID_ARGUMENT, "missing eof");
-  if (!on_chunk) return MakeError(::grpc::StatusCode::INVALID_ARGUMENT, "missing chunk callback");
-  eof->Clear();
-
-  if (spec.compress()) {
-    return MakeError(::grpc::StatusCode::UNIMPLEMENTED, "compress not supported");
+::grpc::Status FilterLogsToTemp(const Root& root,
+                                const Options& opts,
+                                const ops::v1::LogFilterSpec& spec,
+                                const std::vector<fs::path>& candidates,
+                                FilterMetrics* metrics) {
+  if (!metrics) {
+    return MakeError(::grpc::StatusCode::INVALID_ARGUMENT, "missing metrics");
   }
-
-  auto root = MakeRoot(opts.log_root);
-  if (!root) {
-    return MakeError(::grpc::StatusCode::FAILED_PRECONDITION, "invalid log root");
-  }
-
-  auto resolved_base = ResolvePath(*root, spec.base_path());
-  if (!resolved_base) {
-    return MakeError(::grpc::StatusCode::PERMISSION_DENIED, "base path outside root");
-  }
-
-  std::vector<fs::path> candidates;
-  candidates.push_back(*resolved_base);
-  if (spec.include_rotations()) {
-    uint32_t depth = spec.rotation_scan_depth() == 0 ? 2 : spec.rotation_scan_depth();
-    auto parent = resolved_base->parent_path();
-    auto stem = resolved_base->filename().string();
-    auto ext = resolved_base->extension().string();
-    auto stem_no_ext = resolved_base->stem().string();
-    for (uint32_t i = 1; i <= depth; ++i) {
-      candidates.push_back(resolved_base->string() + "." + std::to_string(i));
-      if (!ext.empty()) {
-        fs::path rotated = parent / (stem_no_ext + "." + std::to_string(i) + ext);
-        candidates.push_back(rotated);
-      }
-    }
-  }
+  metrics->total_size = 0;
+  metrics->total_lines = 0;
+  metrics->source_files.clear();
+  metrics->temp_path.clear();
 
   std::vector<std::string> level_filters;
   level_filters.reserve(spec.level_in_size());
@@ -254,34 +244,30 @@ bool ContainsFilter(std::string_view haystack, const std::string& needle) {
     return MakeError(::grpc::StatusCode::INTERNAL, err.code().message());
   }
 
-  std::string base_name = spec.output_basename().empty() ? "logfilter" : spec.output_basename();
-  fs::path temp_path;
+  std::string base_name = opts.output_basename.empty() ? "logfilter" : opts.output_basename;
   try {
-    temp_path = temp_file::CreateUniquePath(temp_dir, base_name + "-", "");
+    metrics->temp_path = temp_file::CreateUniquePath(temp_dir, base_name + "-", "");
   } catch (const std::exception& ex) {
     return MakeError(::grpc::StatusCode::INTERNAL, ex.what());
   }
 
-  std::ofstream out(temp_path, std::ios::binary);
+  std::ofstream out(metrics->temp_path, std::ios::binary);
   if (!out) {
     return MakeError(::grpc::StatusCode::INTERNAL, "failed to create temp file");
   }
 
-  std::vector<std::string> used_sources;
-  std::int64_t total_size = 0;
-  std::int64_t total_lines = 0;
-
   auto enforce_limit = [&](std::size_t to_write) -> bool {
     if (spec.max_output_bytes() == 0) return true;
-    return total_size + static_cast<std::int64_t>(to_write) <= static_cast<std::int64_t>(spec.max_output_bytes());
+    return metrics->total_size + static_cast<std::int64_t>(to_write) <=
+           static_cast<std::int64_t>(spec.max_output_bytes());
   };
 
-  for (auto& candidate : candidates) {
+  for (const auto& candidate : candidates) {
     std::error_code ec;
     auto canonical = fs::weakly_canonical(candidate, ec);
     if (ec || !fs::exists(canonical)) continue;
-    if (root->enabled) {
-      auto rel = fs::relative(canonical, root->canonical, ec);
+    if (root.enabled) {
+      auto rel = fs::relative(canonical, root.canonical, ec);
       if (ec) continue;
       bool ok = true;
       for (const auto& part : rel) {
@@ -293,14 +279,11 @@ bool ContainsFilter(std::string_view haystack, const std::string& needle) {
       if (!ok) continue;
     }
 
-    used_sources.push_back(canonical.string());
+    metrics->source_files.push_back(canonical.string());
     std::ifstream in(canonical, std::ios::binary);
     if (!in) continue;
     std::string line;
     while (std::getline(in, line)) {
-      if (should_stop && should_stop()) {
-        return MakeError(::grpc::StatusCode::CANCELLED, "operation cancelled");
-      }
       ParsedLine parsed_line;
       if (!ParseSpdlogLine(line, &parsed_line)) {
         continue;
@@ -317,22 +300,20 @@ bool ContainsFilter(std::string_view haystack, const std::string& needle) {
       if (!out) {
         return MakeError(::grpc::StatusCode::INTERNAL, "failed to write temp file");
       }
-      total_size += static_cast<std::int64_t>(output_line.size());
-      ++total_lines;
+      metrics->total_size += static_cast<std::int64_t>(output_line.size());
+      ++metrics->total_lines;
     }
   }
 
   out.close();
+  return ::grpc::Status::OK;
+}
 
-  eof->set_total_size(total_size);
-  eof->set_total_lines(total_lines);
-  eof->set_temp_file_path(temp_path.string());
-  for (const auto& path : used_sources) {
-    eof->add_source_files(path);
-  }
-
+::grpc::Status StreamFilteredFile(const Options& opts,
+                                  const LogChunkConsumer& on_chunk,
+                                  FilterMetrics* metrics) {
   auto stream_status = temp_file::StreamFile(
-      temp_path, opts.chunk_size, should_stop,
+      metrics->temp_path, opts.chunk_size, {},
       [&](std::int64_t offset, std::string_view data) -> ::grpc::Status {
         ops::v1::LogChunk chunk;
         chunk.set_offset(offset);
@@ -340,19 +321,75 @@ bool ContainsFilter(std::string_view haystack, const std::string& needle) {
         return on_chunk(std::move(chunk));
       });
   if (!stream_status.ok()) {
-    if (opts.cleanup_temp_file) {
+    return stream_status;
+  }
+  if (opts.cleanup_temp_file) {
+    std::error_code ec;
+    fs::remove(metrics->temp_path, ec);
+  }
+  return ::grpc::Status::OK;
+}
+
+}  // namespace internal
+
+::grpc::Status StreamLogFilter(const Options& opts,
+                               const ops::v1::LogFilterSpec& spec,
+                               const LogChunkConsumer& on_chunk,
+                               ops::v1::LogFilterEof* eof) {
+  if (!eof) return internal::MakeError(::grpc::StatusCode::INVALID_ARGUMENT, "missing eof");
+  if (!on_chunk) return internal::MakeError(::grpc::StatusCode::INVALID_ARGUMENT, "missing chunk callback");
+  eof->Clear();
+
+  if (spec.compress()) {
+    return internal::MakeError(::grpc::StatusCode::UNIMPLEMENTED, "compress not supported");
+  }
+
+  auto root = internal::MakeRoot(opts.log_root);
+  if (!root) {
+    return internal::MakeError(::grpc::StatusCode::FAILED_PRECONDITION, "invalid log root");
+  }
+
+  if (opts.base_path.empty()) {
+    return internal::MakeError(::grpc::StatusCode::FAILED_PRECONDITION, "missing log base path");
+  }
+
+  auto resolved_base = internal::ResolvePath(*root, opts.base_path);
+  if (!resolved_base) {
+    return internal::MakeError(::grpc::StatusCode::PERMISSION_DENIED, "base path outside root");
+  }
+
+  auto candidates = internal::EnumerateCandidates(*resolved_base, opts.include_rotations,
+                                                  opts.rotation_scan_depth);
+
+  internal::FilterMetrics metrics;
+  auto filter_status = internal::FilterLogsToTemp(*root, opts, spec, candidates, &metrics);
+  if (!filter_status.ok()) {
+    if (!metrics.temp_path.empty() && opts.cleanup_temp_file) {
       std::error_code ec;
-      fs::remove(temp_path, ec);
+      fs::remove(metrics.temp_path, ec);
+    }
+    return filter_status;
+  }
+
+  auto stream_status = internal::StreamFilteredFile(opts, on_chunk, &metrics);
+  if (!stream_status.ok()) {
+    if (!metrics.temp_path.empty() && opts.cleanup_temp_file) {
+      std::error_code ec;
+      fs::remove(metrics.temp_path, ec);
     }
     return stream_status;
   }
 
+  eof->set_total_size(metrics.total_size);
+  eof->set_total_lines(metrics.total_lines);
+  eof->set_temp_file_path(metrics.temp_path.string());
+  for (const auto& path : metrics.source_files) {
+    eof->add_source_files(path);
+  }
+
   if (opts.cleanup_temp_file) {
     std::error_code ec;
-    fs::remove(temp_path, ec);
-    if (ec) {
-      // ignore cleanup errors
-    }
+    fs::remove(metrics.temp_path, ec);
   }
 
   return ::grpc::Status::OK;

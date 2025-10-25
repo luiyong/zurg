@@ -88,6 +88,7 @@
 - **PcapTaskRunner**：调用 `pcap_ops::StreamCapture` 捕获数据，生成临时 PCAP 文件并以块形式上传（临时文件管理由 `zurg::temp_file` 统一处理），最后返回 `PcapStats`。
 - **ExecTaskRunner**：当前支持 `ip addr` 场景，枚举已 UP 的网络接口并返回结构化文本。
 - 统一接口：`Run(TaskContext&) -> TaskResult`，负责在结束时发送 `OpEof` 或 `OpError`。
+- `Task` 在入队前会执行参数校验；若失败立刻返回 `OpAck(accepted=false, reason="...")`，避免占用执行线程。
 
 ---
 
@@ -163,11 +164,11 @@
 ## 当前进度 & 后续事项（2025-09-24）
 
 - ✅ `ControlCallbackClient` 已完成，串行任务队列、取消、Shutdown 逻辑在现有单元测试中得到验证。
-- ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetLoggerSinkForTests` 捕获。
+- ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetAdditionalLoggerSink` 捕获。
 - ✅ gRPC 版本已升级至 1.62.0，`GRPC_CALLBACK_API_NONEXPERIMENTAL` 在本地与 CI 默认启用。
 - 🟢 `CallbackAgentIntegrationTest.HandlesLogFilterAndShutdown` 已启用，用于验证回调流的基本握手、日志过滤数据回传以及 Shutdown(drain=false) 行为。
 - 🟢 `CallbackAgentIntegrationTest.HandlesExecTaskCollectsInterfaces` 覆盖 exec 任务的输出与退出码回传。
-- 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
+- 📝 测试时可继续使用 `SetSendHookForTests`/`SetAdditionalLoggerSink` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
 - ⏭️ 下一步：扩展端到端测试覆盖（包括 Cancel、drain=true 等分支），并引入 callback server 端的稳定桩件用于 CI。
 
 ### 推荐容器环境

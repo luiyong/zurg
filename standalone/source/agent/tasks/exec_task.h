@@ -12,6 +12,7 @@ class ExecTask : public Task {
            const ops::v1::ExecSpec& spec,
            std::shared_ptr<spdlog::logger> logger);
 
+  bool Validate(std::string* reason) const override;
   void Run(TaskContext& ctx) override;
 
  private:

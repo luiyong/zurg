@@ -241,7 +241,7 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     zurg::agent::internal::SetSleepHookForTests([](std::chrono::milliseconds) {});
 
     sink_ = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(128);
-    zurg::agent::internal::SetLoggerSinkForTests(sink_);
+    zurg::agent::internal::SetAdditionalLoggerSink(sink_);
 
     namespace fs = std::filesystem;
     auto base_tmp = fs::temp_directory_path();
@@ -251,7 +251,11 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     zurg::log_ops::Options log_opts;
     log_opts.log_root = log_dir_.string();
     log_opts.temp_dir = log_dir_.string();
-    zurg::agent::internal::SetLogOptionsForTests(std::move(log_opts));
+    log_opts.base_path = "agent.log";
+    log_opts.include_rotations = true;
+    log_opts.rotation_scan_depth = 2;
+    log_opts.output_basename = "filtered";
+    zurg::agent::internal::SetLogOptions(std::move(log_opts));
 
     grpc::ServerBuilder builder;
     builder.RegisterService(&service_);
@@ -271,7 +275,7 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
       server_->Shutdown();
       server_->Wait();
     }
-    zurg::agent::internal::SetLoggerSinkForTests(nullptr);
+    zurg::agent::internal::SetAdditionalLoggerSink(nullptr);
     zurg::agent::internal::SetSendHookForTests(nullptr);
     zurg::logging::LoggerManager::shutdown();
     if (!log_dir_.empty()) {
@@ -325,12 +329,8 @@ TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
   }
 
   ops::v1::LogFilterSpec spec;
-  spec.set_base_path(base_log.string());
-  spec.set_include_rotations(true);
-  spec.set_rotation_scan_depth(1);
   spec.add_level_in("info");
   spec.set_grep_contains("keep");
-  spec.set_output_basename("filtered");
   google::protobuf::Timestamp start_time;
   google::protobuf::Timestamp end_time;
   ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T10:55:00Z", &start_time));
@@ -418,7 +418,6 @@ TEST_F(CallbackAgentIntegrationTest, CancelsLogTask) {
   }
 
   ops::v1::LogFilterSpec spec;
-  spec.set_base_path(log_file.string());
   spec.add_level_in("info");
   google::protobuf::Timestamp start_ts;
   google::protobuf::Timestamp end_ts;
@@ -489,7 +488,7 @@ TEST_F(CallbackAgentIntegrationTest, SequentialLogTasksExecuteInOrder) {
 
   auto make_spec = [](const std::string& path, const std::string& start, const std::string& end) {
     ops::v1::LogFilterSpec spec;
-    spec.set_base_path(path);
+    // base paths provided via log options
     spec.add_level_in("info");
     google::protobuf::Timestamp s;
     google::protobuf::Timestamp e;
