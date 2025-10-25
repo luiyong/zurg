@@ -102,6 +102,17 @@ class MockControlService : public ops::v1::Control::CallbackService {
     return true;
   }
 
+  bool SendPing(std::uint64_t seq) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!reactor_) return false;
+    ops::v1::ServerToAgent msg;
+    auto* ping = msg.mutable_ping();
+    ping->set_agent_id("controller");
+    ping->set_seq(seq);
+    reactor_->EnqueueMessage(std::move(msg));
+    return true;
+  }
+
   bool WaitForDone(std::chrono::milliseconds timeout) {
     std::shared_ptr<StreamData> data = SharedData();
     if (!data) return false;
@@ -134,6 +145,12 @@ class MockControlService : public ops::v1::Control::CallbackService {
       data_->send_queue.push_back(std::move(msg));
       if (finish) data_->finish_requested = true;
       MaybeStartWriteLocked(lock);
+    }
+
+    void ForceFinish() {
+      std::unique_lock<std::mutex> lock(data_->mu);
+      data_->finish_requested = true;
+      MaybeFinishLocked(std::move(lock));
     }
 
     void OnReadDone(bool ok) override {
@@ -227,6 +244,15 @@ class MockControlService : public ops::v1::Control::CallbackService {
     return reactor;
   }
 
+ public:
+  bool ForceCloseStream() {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!reactor_) return false;
+    reactor_->ForceFinish();
+    return true;
+  }
+
+ private:
   mutable std::mutex mu_;
   mutable std::condition_variable cv_;
   Reactor* reactor_ = nullptr;
@@ -574,6 +600,55 @@ TEST_F(CallbackAgentIntegrationTest, HandlesExecTaskCollectsInterfaces) {
 
   zurg::agent::internal::RequestStop();
   agent_thread_.join();
+}
+
+TEST_F(CallbackAgentIntegrationTest, ReconnectSendsHello) {
+  using namespace std::chrono_literals;
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  auto first_batch = service_.SnapshotMessages();
+  ASSERT_FALSE(first_batch.empty());
+  EXPECT_EQ(first_batch.front().msg_case(), ops::v1::AgentToServer::kHello);
+
+  ASSERT_TRUE(service_.ForceCloseStream());
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  auto second_batch = service_.SnapshotMessages();
+  ASSERT_FALSE(second_batch.empty());
+  EXPECT_EQ(second_batch.front().msg_case(), ops::v1::AgentToServer::kHello);
+
+  zurg::agent::internal::RequestStop();
+  service_.ForceCloseStream();
+  if (agent_thread_.joinable()) {
+    agent_thread_.join();
+  }
+}
+
+TEST_F(CallbackAgentIntegrationTest, RespondsToPingWithPong) {
+  using namespace std::chrono_literals;
+
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  ASSERT_TRUE(service_.SendPing(42));
+  ASSERT_TRUE(service_.WaitForMessages(2, 1000ms));
+
+  auto messages = service_.SnapshotMessages();
+  ASSERT_GE(messages.size(), 2u);
+  const auto& pong = messages.back();
+  EXPECT_EQ(pong.msg_case(), ops::v1::AgentToServer::kPong);
+  EXPECT_EQ(pong.pong().seq(), 42u);
+
+  zurg::agent::internal::RequestStop();
+  service_.ForceCloseStream();
+  if (agent_thread_.joinable()) {
+    agent_thread_.join();
+  }
 }
 
 }  // namespace

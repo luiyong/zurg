@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package auth.v1;
+
+service Authorization {
+  rpc EstablishAuthStream(RegisterReq) returns (stream ServerMessage);
+}
+
+message ServerMessage {
+  oneof content {
+    LicenseResp license_resp = 1;  // 响应结果
+  }
+}
+
+message RegisterReq {
+  string client_id = 1;  // 客户端id，目的是需要标识具体那些组件接入了授权中心
+}
+
+message LicenseResp {
+  string request_id = 1;  // 请求id,流式调用时，请求时传递了响应中就会携带
+  repeated Asset assets = 2;  // 资产数据
+}
+
+message Asset {
+  string sn = 1;  // 序列号
+  string name = 6;  // 名称
+  int64 expire_at = 8;  // 过期时间戳(秒)
+  bool is_expired = 9;  // 是否过期
+  int64 remaining_valid_timestamp = 10;  // 剩余有效期(秒)
+  int64 created_at = 11;  // 创建时间
+}

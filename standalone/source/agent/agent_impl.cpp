@@ -7,6 +7,7 @@
 #include "tasks/task.h"
 #include "zurg/logger_manager.h"
 #include "zurg/pcap_ops.h"
+#include "control/control_stream_client.h"
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -216,33 +217,6 @@ namespace {
 
 using TaskShouldContinueFn = std::function<bool()>;
 
-class ControlCallbackClient;
-
-class ControlStreamReactor : public grpc::ClientBidiReactor<ops::v1::AgentToServer, ops::v1::ServerToAgent> {
- public:
-  ControlStreamReactor(ControlCallbackClient* parent,
-                       ops::v1::Control::StubInterface* stub,
-                       grpc::ClientContext* ctx);
-
-  void Begin();
-  grpc::Status Wait();
-  void InjectMessage(const ops::v1::ServerToAgent& msg);
-  void TryCancel() { context_->TryCancel(); }
-
-  void OnReadDone(bool ok) override;
-  void OnWriteDone(bool ok) override;
-  void OnDone(const ::grpc::Status& status) override;
-
- private:
-  ControlCallbackClient* parent_;
-  grpc::ClientContext* context_;
-  ops::v1::ServerToAgent incoming_;
-  std::mutex mu_;
-  std::condition_variable cv_;
-  bool done_ = false;
-  grpc::Status status_ = grpc::Status::OK;
-};
-
 using tasks::ExecTask;
 using tasks::LogFilterTask;
 using tasks::PcapTask;
@@ -264,7 +238,9 @@ class ControlCallbackClient : public TaskContext {
   ControlCallbackClient(ops::v1::Control::StubInterface* stub,
                         std::string agent_id,
                         Options options)
-      : stub_(stub), agent_id_(std::move(agent_id)), options_(std::move(options)),
+      : stub_(stub),
+        agent_id_(std::move(agent_id)),
+        options_(std::move(options)),
         logger_(internal::GetLogger()) {
     if (!options_.should_run) {
       options_.should_run = [] { return true; };
@@ -288,6 +264,19 @@ class ControlCallbackClient : public TaskContext {
     if (options_.log_options.chunk_size == 0) {
       options_.log_options.chunk_size = 64 * 1024;
     }
+
+    ControlStreamClient::Options stream_options;
+    stream_options.should_run = [this] { return ShouldStreamContinue(); };
+    stream_options.backoff_fn = options_.backoff_fn;
+    stream_options.sleep_fn = options_.sleep_fn;
+    stream_options.on_send = options_.on_send;
+    stream_client_ =
+        std::make_unique<ControlStreamClient>(stub_, std::move(stream_options), logger_);
+    stream_client_->SetReadyCallback([this] { EnqueueWrite(internal::MakeHello(agent_id_)); });
+    stream_client_->SetMessageCallback(
+        [this](const ops::v1::ServerToAgent& msg, bool ok) { HandleStreamMessage(msg, ok); });
+    stream_client_->SetStreamClosedCallback(
+        [this](const grpc::Status& status) { HandleStreamClosed(status); });
   }
 
   ~ControlCallbackClient() { Stop(); }
@@ -297,70 +286,25 @@ class ControlCallbackClient : public TaskContext {
     running_.store(true);
     worker_thread_ = std::thread(&ControlCallbackClient::WorkerLoop, this);
 
-    std::size_t attempt = 0;
-    while (options_.should_run && options_.should_run()) {
-      grpc::ClientContext ctx;
-      logger_->info("connecting to control stream (attempt={})", attempt + 1);
-      ControlStreamReactor reactor(this, stub_, &ctx);
-      reactor.Begin();
-      grpc::Status status = reactor.Wait();
+    stream_client_->Run();
 
-      bool graceful = false;
-      {
-        std::lock_guard<std::mutex> lock(mu_);
-        graceful = drain_mode_ && task_queue_.empty() && !current_task_;
-      }
-      if (!options_.should_run() || graceful) {
-        running_.store(false);
-        break;
-      }
-      ++attempt;
-      auto delay = options_.backoff_fn(attempt);
-      logger_->warn("stream closed (code={}, message='{}'), reconnecting in {} ms",
-                    static_cast<int>(status.error_code()), status.error_message(), delay.count());
-      options_.sleep_fn(delay);
-    }
-
+    running_.store(false);
+    ShutdownWorker();
     logger_->info("stopping callback client for agent {}", agent_id_);
-    Stop();
   }
 
   void Stop() {
-    running_.store(false);
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      stop_worker_ = true;
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false)) {
+      running_.store(false);
     }
-    task_cv_.notify_all();
-    if (worker_thread_.joinable()) {
-      worker_thread_.join();
+    if (stream_client_) {
+      stream_client_->Stop();
     }
+    ShutdownWorker();
   }
 
-  void OnStreamReady(ControlStreamReactor* reactor) {
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      reactor_ = reactor;
-    }
-    EnqueueWrite(internal::MakeHello(agent_id_));
-  }
-
-  void OnWriteFinished(bool ok) {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (logger_) {
-      logger_->debug("write finished ok={} queue={} in_flight_before={} pending={} current={}", ok,
-                     task_queue_.size(), write_in_flight_, pending_writes_.size(),
-                     current_write_ ? current_write_->msg_case() : 0);
-    }
-    write_in_flight_ = false;
-    current_write_.reset();
-    if (!ok) {
-      pending_writes_.clear();
-    }
-    MaybeStartWriteLocked();
-  }
-
-  void OnMessage(const ops::v1::ServerToAgent& msg, bool ok) {
+  void HandleStreamMessage(const ops::v1::ServerToAgent& msg, bool ok) {
     if (!ok) {
       return;
     }
@@ -382,12 +326,8 @@ class ControlCallbackClient : public TaskContext {
     }
   }
 
-  void OnStreamClosed(const grpc::Status&) {
+  void HandleStreamClosed(const grpc::Status&) {
     std::lock_guard<std::mutex> lock(mu_);
-    reactor_ = nullptr;
-    write_in_flight_ = false;
-    current_write_.reset();
-    pending_writes_.clear();
     CancelAllLocked("stream closed");
   }
   // TaskContext overrides
@@ -419,36 +359,41 @@ class ControlCallbackClient : public TaskContext {
     DoSendExecData(op_id, std::move(chunk));
   }
 
-  void SendEofExec(std::uint32_t op_id, const ops::v1::ExecExit& exit) override {
+ void SendEofExec(std::uint32_t op_id, const ops::v1::ExecExit& exit) override {
     DoSendEofExec(op_id, exit);
   }
 
  private:
+  bool ShouldStreamContinue() const {
+    if (!running_.load()) {
+      return false;
+    }
+    if (options_.should_run && !options_.should_run()) {
+      return false;
+    }
+    return true;
+  }
+
+  void ShutdownWorker() {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      stop_worker_ = true;
+    }
+    task_cv_.notify_all();
+    if (worker_thread_.joinable()) {
+      worker_thread_.join();
+    }
+    stop_worker_ = false;
+  }
+
   bool ShouldContinueInternal() const {
     if (!running_.load()) return false;
     if (!options_.should_run) return true;
     return options_.should_run();
   }
 
-  void MaybeStartWriteLocked() {
-    if (!reactor_ || write_in_flight_ || pending_writes_.empty()) return;
-    current_write_.emplace(std::move(pending_writes_.front()));
-    pending_writes_.pop_front();
-    if (logger_) {
-      logger_->debug("start write msg_case={} remaining={}",
-                     current_write_->msg_case(), pending_writes_.size());
-    }
-    write_in_flight_ = true;
-    reactor_->StartWrite(&*current_write_);
-  }
-
   void EnqueueWrite(ops::v1::AgentToServer msg) {
-    if (options_.on_send) {
-      options_.on_send(msg);
-    }
-    std::lock_guard<std::mutex> lock(mu_);
-    pending_writes_.push_back(std::move(msg));
-    MaybeStartWriteLocked();
+    stream_client_->EnqueueWrite(std::move(msg));
   }
 
   void SendAck(std::uint32_t op_id, bool accepted, std::string reason = std::string()) {
@@ -459,7 +404,9 @@ class ControlCallbackClient : public TaskContext {
     if (!reason.empty()) {
       ack->set_reason(std::move(reason));
     }
-    logger_->debug("send Ack op_id={} accepted={} reason={}", op_id, accepted, reason);
+    if (logger_) {
+      logger_->debug("send Ack op_id={} accepted={} reason={}", op_id, accepted, reason);
+    }
     EnqueueWrite(std::move(msg));
   }
 
@@ -469,7 +416,9 @@ class ControlCallbackClient : public TaskContext {
     err->set_op_id(op_id);
     err->set_code(std::move(code));
     err->set_message(std::move(message));
-    logger_->warn("send Error op_id={} code={} message={}", op_id, err->code(), err->message());
+    if (logger_) {
+      logger_->warn("send Error op_id={} code={} message={}", op_id, err->code(), err->message());
+    }
     EnqueueWrite(std::move(msg));
   }
 
@@ -661,12 +610,14 @@ class ControlCallbackClient : public TaskContext {
 
   void HandleShutdown(const ops::v1::Shutdown& shutdown) {
     const bool drain = shutdown.drain();
-    ControlStreamReactor* reactor_to_cancel = nullptr;
     std::vector<std::uint32_t> cancelled_ops;
     {
       std::lock_guard<std::mutex> lock(mu_);
       drain_mode_ = drain;
-      logger_->info("received shutdown request drain={} queue_size={}", drain, task_queue_.size());
+      if (logger_) {
+        logger_->info("received shutdown request drain={} queue_size={}", drain,
+                      task_queue_.size());
+      }
       if (!drain) {
         if (current_task_) {
           current_task_->RequestCancel();
@@ -692,15 +643,14 @@ class ControlCallbackClient : public TaskContext {
           cancelled_ops.push_back(task->op_id());
           it = tasks_.erase(it);
         }
-        reactor_to_cancel = reactor_;
       }
-    }
-    if (reactor_to_cancel) {
-      reactor_to_cancel->TryCancel();
     }
     if (!drain) {
       for (const auto& op : cancelled_ops) {
         DoSendError(op, "CANCELLED", "operation cancelled");
+      }
+      if (stream_client_) {
+        stream_client_->CancelStream();
       }
       running_.store(false);
       task_cv_.notify_all();
@@ -729,16 +679,8 @@ class ControlCallbackClient : public TaskContext {
       }
     }
     task_queue_.clear();
-    if (reactor_) {
-      for (const auto& op_id : cancelled_ops) {
-        ops::v1::AgentToServer msg;
-        auto* err = msg.mutable_error();
-        err->set_op_id(op_id);
-        err->set_code("CANCELLED");
-        err->set_message(std::string(reason));
-        pending_writes_.push_back(std::move(msg));
-      }
-      MaybeStartWriteLocked();
+    for (const auto& op_id : cancelled_ops) {
+      DoSendError(op_id, "CANCELLED", std::string(reason));
     }
   }
   void RunTask(const std::shared_ptr<Task>& task) {
@@ -815,69 +757,20 @@ class ControlCallbackClient : public TaskContext {
   ops::v1::Control::StubInterface* stub_ = nullptr;
   std::string agent_id_;
   Options options_;
+  std::shared_ptr<spdlog::logger> logger_;
+  std::unique_ptr<ControlStreamClient> stream_client_;
 
   std::atomic<bool> running_{false};
   std::thread worker_thread_;
 
   std::mutex mu_;
-  ControlStreamReactor* reactor_ = nullptr;
-  std::deque<ops::v1::AgentToServer> pending_writes_;
-  std::optional<ops::v1::AgentToServer> current_write_;
-  bool write_in_flight_ = false;
-
   std::condition_variable task_cv_;
   std::deque<std::shared_ptr<Task>> task_queue_;
   std::unordered_map<std::uint32_t, std::shared_ptr<Task>> tasks_;
   std::shared_ptr<Task> current_task_;
   bool drain_mode_ = false;
   bool stop_worker_ = false;
-  std::shared_ptr<spdlog::logger> logger_;
 };
-
-ControlStreamReactor::ControlStreamReactor(ControlCallbackClient* parent,
-                                           ops::v1::Control::StubInterface* stub,
-                                           grpc::ClientContext* ctx)
-    : parent_(parent), context_(ctx) {
-  stub->experimental_async()->Connect(context_, this);
-}
-
-void ControlStreamReactor::Begin() {
-  StartCall();
-  parent_->OnStreamReady(this);
-  StartRead(&incoming_);
-}
-
-grpc::Status ControlStreamReactor::Wait() {
-  std::unique_lock<std::mutex> lock(mu_);
-  cv_.wait(lock, [&] { return done_; });
-  return status_;
-}
-
-void ControlStreamReactor::InjectMessage(const ops::v1::ServerToAgent& msg) {
-  incoming_ = msg;
-  OnReadDone(true);
-}
-
-void ControlStreamReactor::OnReadDone(bool ok) {
-  parent_->OnMessage(incoming_, ok);
-  if (ok) {
-    StartRead(&incoming_);
-  }
-}
-
-void ControlStreamReactor::OnWriteDone(bool ok) {
-  parent_->OnWriteFinished(ok);
-}
-
-void ControlStreamReactor::OnDone(const ::grpc::Status& status) {
-  parent_->OnStreamClosed(status);
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    done_ = true;
-    status_ = status;
-  }
-  cv_.notify_all();
-}
 
 }  // namespace
 

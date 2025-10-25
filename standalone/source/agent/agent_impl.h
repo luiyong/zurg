@@ -40,6 +40,8 @@ void SleepWithStop(std::chrono::milliseconds delay);
 void SetSendHookForTests(std::function<void(const ops::v1::AgentToServer&)> hook);
 void SetAdditionalLoggerSink(std::shared_ptr<spdlog::sinks::sink> sink);
 void SetLogOptions(zurg::log_ops::Options opts);
+std::function<void(const ops::v1::AgentToServer&)> GetSendHook();
+std::shared_ptr<spdlog::logger> GetLogger();
 
 }  // namespace internal
 

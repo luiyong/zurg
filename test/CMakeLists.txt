@@ -88,35 +88,7 @@ if(NOT spdlog_FOUND)
   endif()
 endif()
 
-set(PROTO_ROOT ${CMAKE_CURRENT_LIST_DIR}/../third_party)
-set(GENERATED_PROTO_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
-set(OS_PROTO ${PROTO_ROOT}/os.proto)
-set(OS_PROTO_SRC ${GENERATED_PROTO_DIR}/os.pb.cc)
-set(OS_PROTO_HDR ${GENERATED_PROTO_DIR}/os.pb.h)
-set(OS_GRPC_PROTO_SRC ${GENERATED_PROTO_DIR}/os.grpc.pb.cc)
-set(OS_GRPC_PROTO_HDR ${GENERATED_PROTO_DIR}/os.grpc.pb.h)
-
-find_program(GRPC_CPP_PLUGIN_EXECUTABLE NAMES grpc_cpp_plugin
-  HINTS /usr/bin /usr/local/bin /opt/homebrew/bin)
-if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
-  message(FATAL_ERROR "grpc_cpp_plugin not found; install protobuf-compiler-grpc 或 brew install grpc")
-endif()
-
-file(MAKE_DIRECTORY ${GENERATED_PROTO_DIR})
-
-add_custom_command(
-  OUTPUT ${OS_PROTO_SRC} ${OS_PROTO_HDR} ${OS_GRPC_PROTO_SRC} ${OS_GRPC_PROTO_HDR}
-  COMMAND ${Protobuf_PROTOC_EXECUTABLE}
-  ARGS --cpp_out=${GENERATED_PROTO_DIR}
-       --grpc_out=${GENERATED_PROTO_DIR}
-       --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
-       -I ${PROTO_ROOT} ${OS_PROTO}
-  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/../cmake/fix_grpc_namespace.py
-          ${OS_GRPC_PROTO_SRC} ${OS_GRPC_PROTO_HDR}
-  DEPENDS ${OS_PROTO}
-  COMMENT "Generating test C++ sources from os.proto"
-  VERBATIM
-)
+set(GENERATED_PROTO_DIR ${PROJECT_BINARY_DIR}/generated)
 
 # ---- Create binary ----
 
@@ -131,22 +103,26 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/source/log_ops_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/temp_file_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/callback_agent_integration_test.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/log_ops.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/pcap_ops.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/../source/zurg/logger_manager.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/log_filter_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/pcap_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/exec_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/agent_impl.cpp
-  ${OS_PROTO_SRC}
-  ${OS_GRPC_PROTO_SRC}
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/control/control_stream_client.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_client_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/auth_manager_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/persistence_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/connection_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/auth/reconnect_test.cpp
 )
-target_compile_definitions(${PROJECT_NAME} PRIVATE GRPC_CALLBACK_API_NONEXPERIMENTAL=1)
-target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf)
-if(spdlog_FOUND)
-  target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog_header_only)
-endif()
+target_link_libraries(${PROJECT_NAME} PRIVATE
+  GTest::gtest
+  GTest::gtest_main
+  protobuf::libprotobuf
+  zurg::zurg
+  spdlog::spdlog
+)
+add_dependencies(${PROJECT_NAME} zurg)
 if(GRPCPP_LIBRARY_DIRS_RES)
   target_link_directories(${PROJECT_NAME} PRIVATE ${GRPCPP_LIBRARY_DIRS_RES})
 endif()
@@ -173,6 +149,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent
   ${GENERATED_PROTO_DIR}
+  ${PROJECT_BINARY_DIR}/generated
   ${GRPCPP_INCLUDE_DIRS_RES}
   ${PCAP_INCLUDE_DIRS}
 )
