@@ -57,6 +57,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
 find_package(Protobuf CONFIG REQUIRED)
+
 if (TARGET protobuf::protoc)
   get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION)
   if (NOT _PROTOC_LOCATION)

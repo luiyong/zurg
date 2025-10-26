@@ -10,12 +10,15 @@
 #include "zurg/event/agent_events.h"
 #include <google/protobuf/util/time_util.h>
 
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+
 #include <filesystem>
 #include <fstream>
+
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -85,6 +88,7 @@ class MockControlService : public ops::v1::Control::CallbackService {
     reactor_->EnqueueMessage(std::move(msg));
     return true;
   }
+
 
   bool SendShutdown(bool drain) {
     std::lock_guard<std::mutex> lock(mu_);
@@ -271,6 +275,7 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     sink_ = std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(128);
     zurg::agent::internal::SetAdditionalLoggerSink(sink_);
 
+
     namespace fs = std::filesystem;
     auto base_tmp = fs::temp_directory_path();
     log_dir_ = base_tmp / fs::path("zurg-logfilter-test") /
@@ -284,6 +289,7 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     log_opts.rotation_scan_depth = 2;
     log_opts.output_basename = "filtered";
     zurg::agent::internal::SetLogOptions(std::move(log_opts));
+
 
     grpc::ServerBuilder builder;
     builder.RegisterService(&service_);
@@ -306,10 +312,12 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
     zurg::agent::internal::SetAdditionalLoggerSink(nullptr);
     zurg::agent::internal::SetSendHookForTests(nullptr);
     zurg::logging::LoggerManager::shutdown();
+
     if (!log_dir_.empty()) {
       std::error_code ec;
       std::filesystem::remove_all(log_dir_, ec);
     }
+
   }
 
   void StartAgentThread(const std::string& agent_id = "agent-test") {
@@ -322,10 +330,13 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
   int port_ = 0;
   std::thread agent_thread_;
   std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> sink_;
+
   std::filesystem::path log_dir_;
 };
 
 TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
+
+
   std::vector<ops::v1::AgentToServer> sent;
   std::mutex sent_mu;
   zurg::agent::internal::SetSendHookForTests([&](const ops::v1::AgentToServer& msg) {
@@ -340,6 +351,7 @@ TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
   auto messages = service_.SnapshotMessages();
   ASSERT_GE(messages.size(), 1u);
   EXPECT_EQ(messages[0].msg_case(), ops::v1::AgentToServer::kHello);
+
 
   namespace fs = std::filesystem;
   fs::path base_log = log_dir_ / "agent.log";
@@ -371,12 +383,14 @@ TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
   ASSERT_TRUE(service_.WaitForMessages(4, 2000ms));
   messages = service_.SnapshotMessages();
   ASSERT_GE(messages.size(), 4u);
+
   EXPECT_EQ(messages[1].msg_case(), ops::v1::AgentToServer::kAck);
   EXPECT_TRUE(messages[1].ack().accepted());
   EXPECT_EQ(messages[1].ack().op_id(), 1u);
 
   bool saw_data = false;
   bool saw_eof = false;
+
   std::string concatenated;
   for (const auto& msg : messages) {
     if (msg.msg_case() == ops::v1::AgentToServer::kData && msg.data().has_log_chunk()) {
@@ -387,12 +401,15 @@ TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
       saw_eof = true;
       EXPECT_EQ(msg.eof().log().total_lines(), 1);
       EXPECT_GE(msg.eof().log().total_size(), 0);
+
     }
   }
   EXPECT_TRUE(saw_data);
   EXPECT_TRUE(saw_eof);
+
   EXPECT_NE(concatenated.find("keep-1"), std::string::npos);
   EXPECT_EQ(concatenated.find("old-line"), std::string::npos);
+
 
   ASSERT_TRUE(service_.SendShutdown(false));
   ASSERT_TRUE(service_.WaitForDone(2000ms));
@@ -421,6 +438,7 @@ TEST_F(CallbackAgentIntegrationTest, HandlesLogFilterAndShutdown) {
     }
   }
   EXPECT_TRUE(found_logger);
+
 }
 
 TEST_F(CallbackAgentIntegrationTest, CancelsLogTask) {
@@ -677,6 +695,7 @@ TEST_F(CallbackAgentIntegrationTest, HandlesExecTaskCollectsInterfaces) {
 
   zurg::agent::internal::RequestStop();
   agent_thread_.join();
+
 }
 
 TEST_F(CallbackAgentIntegrationTest, ReconnectSendsHello) {
