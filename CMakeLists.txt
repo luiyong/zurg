@@ -41,6 +41,18 @@ CPMAddPackage(
   GITHUB_REPOSITORY gabime/spdlog
 )
 
+CPMAddPackage(
+  NAME eventpp
+  GITHUB_REPOSITORY wqking/eventpp
+  GIT_TAG v0.1.3
+  DOWNLOAD_ONLY YES
+)
+
+if(eventpp_ADDED)
+  add_library(eventpp INTERFACE)
+  target_include_directories(eventpp INTERFACE ${eventpp_SOURCE_DIR}/include)
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
@@ -148,7 +160,7 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>
 # Link dependencies
 target_link_libraries(
   ${PROJECT_NAME}
-  PUBLIC spdlog::spdlog protobuf::libprotobuf ${PCAP_LIBRARIES} ${GRPCPP_LINK_LIBS}
+  PUBLIC spdlog::spdlog protobuf::libprotobuf ${PCAP_LIBRARIES} ${GRPCPP_LINK_LIBS} eventpp
 )
 
 if(GRPCPP_LIBRARY_DIRS)

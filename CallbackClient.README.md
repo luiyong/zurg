@@ -62,6 +62,15 @@
   - `OnDone`：处理流结束（异常/正常），触发重连或退出。
 - **重连策略**：指数回退（复用现有 `ComputeBackoff` 逻辑），尊重 `Shutdown` 指令。
 
+### 事件驱动的授权与主备控制
+
+- 引入 `eventpp::EventDispatcher` 封装成全局 `EventBus`，使用 `AuthStateChangedEvent` 广播授权结果。
+- `AuthManager` 在离/在线校验、连接状态变化时通过 `EventBus` 发布事件，并缓存最后一次状态，保证后续订阅者能立即获取。
+- `ControlCallbackClient` 在构造时订阅授权事件：
+  - `AuthState::kOnline` → 恢复配置文件定义的 `FeatureToggles`；
+  - 非在线状态 → 自动关闭日志过滤/抓包/命令执行任务，拒绝新的 `StartOp`，并取消排队任务。
+- 架构天然支持后续扩展的主备切换等事件，只需定义新的事件类型并订阅对应回调，不影响现有模块耦合度。
+
 ### 2. TaskDispatcher
 
 - 持有串行任务队列与执行线程。
@@ -123,7 +132,7 @@
 
 1. **单位测试**：
    - `TaskDispatcher` 队列行为、取消逻辑、Shutdown 分支。
-   - Runner 的错误处理（使用假数据源）。
+- Runner 的错误处理（使用假数据源）。
 
 2. **Mock gRPC 测试**：
    - 利用 in-process server 模拟 `ServerToAgent` 消息，验证消息序列。

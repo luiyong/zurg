@@ -19,6 +19,8 @@
 #include "control/control_stream_client.h"
 #include "os.grpc.pb.h"
 #include "tasks/task.h"
+#include "zurg/agent/events.h"
+#include "zurg/event/agent_events.h"
 #include "zurg/log_ops.h"
 
 namespace zurg::agent {
@@ -63,6 +65,10 @@ class ControlCallbackClient : public tasks::TaskContext {
   void DoSendEofPcap(std::uint32_t op_id, const ops::v1::PcapStats& stats);
   void DoSendExecData(std::uint32_t op_id, ops::v1::ExecChunk chunk);
   void DoSendEofExec(std::uint32_t op_id, const ops::v1::ExecExit& exit);
+  void OnAuthStateChanged(const events::AuthStateChangedEvent& event);
+  void ApplyFeatureUpdate(const FeatureToggles& toggles);
+  bool IsTaskAllowed(const FeatureToggles& toggles, tasks::Task::Kind kind) const;
+  FeatureToggles RestrictedFeatures() const;
 
   void HandleStreamMessage(const ops::v1::ServerToAgent& msg, bool ok);
   void HandleStreamClosed(const grpc::Status& status);
@@ -89,6 +95,9 @@ class ControlCallbackClient : public tasks::TaskContext {
   std::shared_ptr<tasks::Task> current_task_;
   bool drain_mode_ = false;
   bool stop_worker_ = false;
+  FeatureToggles requested_features_;
+  FeatureToggles active_features_;
+  events::EventBus::SubscriptionToken auth_subscription_;
 };
 
 }  // namespace zurg::agent

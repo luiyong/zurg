@@ -18,6 +18,14 @@ namespace zurg::agent {
 
 namespace {
 
+constexpr std::string_view kAuthorizationDisabledReason = "authorization disabled";
+constexpr std::string_view kFeaturesDisabledReason = "features disabled";
+constexpr std::string_view kLogFilterDisabledReason = "log filter disabled";
+constexpr std::string_view kPcapDisabledReason = "pcap disabled";
+constexpr std::string_view kExecDisabledReason = "exec disabled";
+constexpr std::string_view kAuthorizationErrorMessage =
+    "operation disabled by authorization state";
+
 ops::v1::AgentToServer MakeHello(const std::string& agent_id) {
   ops::v1::AgentToServer msg;
   auto* hello = msg.mutable_hello();
@@ -70,6 +78,11 @@ ControlCallbackClient::ControlCallbackClient(ops::v1::Control::StubInterface* st
     options_.log_options.chunk_size = 64 * 1024;
   }
 
+  requested_features_ = options_.features;
+  active_features_ = options_.features;
+  auth_subscription_ = events::GlobalEventBus().Subscribe<events::AuthStateChangedEvent>(
+      [this](const events::AuthStateChangedEvent& event) { OnAuthStateChanged(event); });
+
   ControlStreamClient::Options stream_options;
   stream_options.should_run = [this] { return ShouldStreamContinue(); };
   stream_options.backoff_fn = options_.backoff_fn;
@@ -82,9 +95,18 @@ ControlCallbackClient::ControlCallbackClient(ops::v1::Control::StubInterface* st
       [this](const ops::v1::ServerToAgent& msg, bool ok) { HandleStreamMessage(msg, ok); });
   stream_client_->SetStreamClosedCallback(
       [this](const grpc::Status& status) { HandleStreamClosed(status); });
+
+  if (auto last = events::GlobalEventBus().LastEvent<events::AuthStateChangedEvent>()) {
+    OnAuthStateChanged(*last);
+  } else {
+    ApplyFeatureUpdate(active_features_);
+  }
 }
 
-ControlCallbackClient::~ControlCallbackClient() { Stop(); }
+ControlCallbackClient::~ControlCallbackClient() {
+  Stop();
+  auth_subscription_.Unsubscribe();
+}
 
 bool ControlCallbackClient::ShouldContinue() const { return ShouldContinueInternal(); }
 
@@ -138,6 +160,7 @@ void ControlCallbackClient::Stop() {
     stream_client_->Stop();
   }
   ShutdownWorker();
+  auth_subscription_.Unsubscribe();
 }
 
 bool ControlCallbackClient::ShouldStreamContinue() const {
@@ -258,6 +281,122 @@ void ControlCallbackClient::DoSendEofExec(std::uint32_t op_id, const ops::v1::Ex
   EnqueueWrite(std::move(msg));
 }
 
+void ControlCallbackClient::OnAuthStateChanged(const events::AuthStateChangedEvent& event) {
+  if (logger_) {
+    logger_->info("authorization state changed to {}", event.state == auth::AuthState::kOnline
+                                                          ? "ONLINE"
+                                                          : (event.state == auth::AuthState::kOffline
+                                                                 ? "OFFLINE"
+                                                                 : "UNKNOWN"));
+  }
+  if (event.state == auth::AuthState::kOnline) {
+    ApplyFeatureUpdate(requested_features_);
+  } else {
+    ApplyFeatureUpdate(RestrictedFeatures());
+  }
+}
+
+void ControlCallbackClient::ApplyFeatureUpdate(const FeatureToggles& toggles) {
+  std::vector<std::uint32_t> to_error;
+  bool notify_worker = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (active_features_.enabled == toggles.enabled &&
+        active_features_.enable_log_filter == toggles.enable_log_filter &&
+        active_features_.enable_pcap == toggles.enable_pcap &&
+        active_features_.enable_exec == toggles.enable_exec) {
+      return;
+    }
+
+    active_features_ = toggles;
+    if (logger_) {
+      logger_->info("active feature toggles updated: enabled={} log_filter={} pcap={} exec={}",
+                    active_features_.enabled ? "on" : "off",
+                    active_features_.enable_log_filter ? "on" : "off",
+                    active_features_.enable_pcap ? "on" : "off",
+                    active_features_.enable_exec ? "on" : "off");
+    }
+
+    auto is_allowed = [&](const std::shared_ptr<tasks::Task>& task) {
+      if (!task) {
+        return false;
+      }
+      return IsTaskAllowed(active_features_, task->kind());
+    };
+
+    for (auto it = task_queue_.begin(); it != task_queue_.end();) {
+      const auto& task = *it;
+      if (!task || !is_allowed(task)) {
+        if (task) {
+          to_error.push_back(task->op_id());
+          tasks_.erase(task->op_id());
+        }
+        it = task_queue_.erase(it);
+        notify_worker = true;
+      } else {
+        ++it;
+      }
+    }
+
+    for (auto it = tasks_.begin(); it != tasks_.end();) {
+      auto task = it->second;
+      if (!task) {
+        it = tasks_.erase(it);
+        continue;
+      }
+      if (!IsTaskAllowed(active_features_, task->kind())) {
+        if (current_task_ && task == current_task_) {
+          task->RequestCancel();
+          ++it;
+          continue;
+        }
+        to_error.push_back(task->op_id());
+        it = tasks_.erase(it);
+        notify_worker = true;
+      } else {
+        ++it;
+      }
+    }
+
+    if (current_task_ && !IsTaskAllowed(active_features_, current_task_->kind())) {
+      current_task_->RequestCancel();
+      notify_worker = true;
+    }
+  }
+
+  if (notify_worker) {
+    task_cv_.notify_all();
+  }
+  for (auto op_id : to_error) {
+    DoSendError(op_id, "UNAUTHORIZED", std::string(kAuthorizationErrorMessage));
+  }
+}
+
+bool ControlCallbackClient::IsTaskAllowed(const FeatureToggles& toggles,
+                                          tasks::Task::Kind kind) const {
+  if (!toggles.enabled) {
+    return false;
+  }
+  switch (kind) {
+    case tasks::Task::Kind::kLogFilter:
+      return toggles.enable_log_filter;
+    case tasks::Task::Kind::kPcap:
+      return toggles.enable_pcap;
+    case tasks::Task::Kind::kExec:
+      return toggles.enable_exec;
+  }
+  return false;
+}
+
+FeatureToggles ControlCallbackClient::RestrictedFeatures() const {
+  FeatureToggles toggles{};
+  toggles.enabled = false;
+  toggles.enable_log_filter = false;
+  toggles.enable_pcap = false;
+  toggles.enable_exec = false;
+  return toggles;
+}
+
 void ControlCallbackClient::HandleStreamMessage(const ops::v1::ServerToAgent& msg, bool ok) {
   if (!ok) {
     return;
@@ -313,31 +452,63 @@ void ControlCallbackClient::HandleStartOp(const ops::v1::StartOp& start) {
       return;
     }
 
+    FeatureToggles features_snapshot = active_features_;
+    if (!features_snapshot.enabled) {
+      const auto& reason = requested_features_.enabled ? kAuthorizationDisabledReason
+                                                       : kFeaturesDisabledReason;
+      if (logger_) {
+        logger_->warn("reject StartOp op_id={} reason={}", op_id, reason);
+      }
+      SendAck(op_id, false, std::string(reason));
+      return;
+    }
+
     if (start.has_log_filter()) {
-      if (!options_.features.enable_log_filter) {
+      if (!requested_features_.enable_log_filter) {
         if (logger_) {
           logger_->warn("reject StartOp op_id={} reason=log_filter_disabled", op_id);
         }
-        SendAck(op_id, false, "log filter disabled");
+        SendAck(op_id, false, std::string(kLogFilterDisabledReason));
+        return;
+      }
+      if (!features_snapshot.enable_log_filter) {
+        if (logger_) {
+          logger_->warn("reject StartOp op_id={} reason=authorization_disabled_log", op_id);
+        }
+        SendAck(op_id, false, std::string(kAuthorizationDisabledReason));
         return;
       }
       task = std::make_shared<tasks::LogFilterTask>(op_id, start.log_filter(),
                                                     options_.log_options, logger_);
     } else if (start.has_pcap()) {
-      if (!options_.features.enable_pcap) {
+      if (!requested_features_.enable_pcap) {
         if (logger_) {
           logger_->warn("reject StartOp op_id={} reason=pcap_disabled", op_id);
         }
-        SendAck(op_id, false, "pcap disabled");
+        SendAck(op_id, false, std::string(kPcapDisabledReason));
+        return;
+      }
+      if (!features_snapshot.enable_pcap) {
+        if (logger_) {
+          logger_->warn("reject StartOp op_id={} reason=authorization_disabled_pcap", op_id);
+        }
+        SendAck(op_id, false, std::string(kAuthorizationDisabledReason));
         return;
       }
       task = std::make_shared<tasks::PcapTask>(op_id, start.pcap(), options_.log_options, logger_);
     } else if (start.has_exec()) {
-      if (!options_.features.enable_exec) {
+      if (!requested_features_.enable_exec) {
         if (logger_) {
           logger_->warn("reject StartOp op_id={} reason=exec_disabled", op_id);
         }
-        SendAck(op_id, false, "exec disabled");
+        SendAck(op_id, false, std::string(kExecDisabledReason));
+        return;
+      }
+      if (!features_snapshot.enable_exec) {
+        if (logger_) {
+          logger_->warn("reject StartOp op_id={} reason=authorization_disabled_exec", op_id);
+        }
+        SendAck(op_id, false, std::string(kAuthorizationDisabledReason));
         return;
       }
       task = std::make_shared<tasks::ExecTask>(op_id, start.exec(), logger_);
@@ -361,10 +532,34 @@ void ControlCallbackClient::HandleStartOp(const ops::v1::StartOp& start) {
     return;
   }
 
+  bool accepted = false;
+  std::string late_reject_reason;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    tasks_[op_id] = task;
-    task_queue_.push_back(task);
+    FeatureToggles features_snapshot = active_features_;
+    if (!IsTaskAllowed(features_snapshot, task->kind())) {
+      if (!features_snapshot.enabled && requested_features_.enabled) {
+        late_reject_reason = std::string(kAuthorizationDisabledReason);
+      } else {
+        late_reject_reason = std::string(kFeaturesDisabledReason);
+      }
+    } else {
+      tasks_[op_id] = task;
+      task_queue_.push_back(task);
+      accepted = true;
+    }
+  }
+
+  if (!accepted) {
+    if (late_reject_reason.empty()) {
+      late_reject_reason = std::string(kAuthorizationDisabledReason);
+    }
+    if (logger_) {
+      logger_->warn("reject StartOp op_id={} reason={} (post-validation)", op_id,
+                    late_reject_reason);
+    }
+    SendAck(op_id, false, std::move(late_reject_reason));
+    return;
   }
 
   const char* type_name = "unknown";

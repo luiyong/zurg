@@ -43,6 +43,7 @@ class AuthManager {
   void HandleMessage(const proto::LicenseResp& message);
   void HandleConnection(bool connected);
   void PersistMessage(const proto::LicenseResp& message);
+  void UpdateAuthState(AuthState new_state, bool force = false);
 
   static bool IsAssetValid(const proto::Asset& asset, std::time_t now);
 

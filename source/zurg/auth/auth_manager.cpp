@@ -7,6 +7,8 @@
 
 #include <spdlog/sinks/basic_file_sink.h>
 
+#include "zurg/agent/events.h"
+
 namespace zurg::auth {
 
 namespace {
@@ -60,6 +62,8 @@ AuthManager::AuthManager(const std::string& server_address, const std::string& c
   } catch (const std::exception& e) {
     std::cerr << "Failed to initialize logger: " << e.what() << std::endl;
   }
+
+  UpdateAuthState(AuthState::kUnknown, true);
 }
 
 AuthManager::~AuthManager() {
@@ -123,18 +127,21 @@ bool AuthManager::CheckAuthorization() {
 bool AuthManager::CheckOfflineAuthorization() {
   if (persistence_file_.empty()) {
     spdlog::error("Persistence file not set, cannot check offline authorization");
+    UpdateAuthState(AuthState::kOffline);
     return false;
   }
 
   try {
     if (!std::filesystem::exists(persistence_file_)) {
       spdlog::error("Persistence file does not exist: {}", persistence_file_);
+      UpdateAuthState(AuthState::kOffline);
       return false;
     }
 
     std::ifstream file(persistence_file_, std::ios::binary);
     if (!file.is_open()) {
       spdlog::error("Failed to open persistence file: {}", persistence_file_);
+      UpdateAuthState(AuthState::kOffline);
       return false;
     }
 
@@ -146,12 +153,14 @@ bool AuthManager::CheckOfflineAuthorization() {
 
     if (serialized_data.empty()) {
       spdlog::error("No data found in persistence file");
+      UpdateAuthState(AuthState::kOffline);
       return false;
     }
 
     proto::LicenseResp message;
     if (!message.ParseFromString(serialized_data)) {
       spdlog::error("Failed to parse LicenseResp from file data");
+      UpdateAuthState(AuthState::kOffline);
       return false;
     }
 
@@ -168,15 +177,16 @@ bool AuthManager::CheckOfflineAuthorization() {
 
     if (has_valid_asset) {
       spdlog::info("Offline authorization check: AUTHORIZED");
-      auth_state_.store(AuthState::kOnline);
+      UpdateAuthState(AuthState::kOnline);
       return true;
     }
 
     spdlog::warn("Offline authorization check: NOT AUTHORIZED (no valid assets)");
-    auth_state_.store(AuthState::kOffline);
+    UpdateAuthState(AuthState::kOffline);
     return false;
   } catch (const std::exception& e) {
     spdlog::error("Failed to check offline authorization: {}", e.what());
+    UpdateAuthState(AuthState::kOffline);
     return false;
   }
 }
@@ -204,10 +214,10 @@ void AuthManager::HandleMessage(const proto::LicenseResp& message) {
     }
 
     if (authorized) {
-      auth_state_.store(AuthState::kOnline);
+      UpdateAuthState(AuthState::kOnline);
       spdlog::info("Updated auth state to ONLINE based on received message");
     } else {
-      auth_state_.store(AuthState::kOffline);
+      UpdateAuthState(AuthState::kOffline);
       spdlog::warn("Updated auth state to OFFLINE based on received message");
     }
   }
@@ -217,17 +227,25 @@ void AuthManager::HandleConnection(bool connected) {
   spdlog::info("Handling connection status change: {}", connected ? "CONNECTED" : "DISCONNECTED");
 
   if (connected) {
-    auth_state_.store(AuthState::kOnline);
+    UpdateAuthState(AuthState::kOnline);
     mode_.store(AuthMode::kOnline);
     spdlog::info("Client connected, auth state set to ONLINE, mode set to ONLINE");
   } else {
-    auth_state_.store(AuthState::kOffline);
+    UpdateAuthState(AuthState::kOffline);
     if (mode_.load() == AuthMode::kOnline) {
       mode_.store(AuthMode::kOffline);
       spdlog::info("Client disconnected, mode set to OFFLINE");
     } else {
       spdlog::info("Client disconnected, mode remains {}", ModeToString(mode_.load()));
     }
+  }
+}
+
+void AuthManager::UpdateAuthState(AuthState new_state, bool force) {
+  auto previous = auth_state_.exchange(new_state);
+  if (force || previous != new_state) {
+    zurg::agent::events::AuthStateChangedEvent event{new_state};
+    zurg::agent::events::GlobalEventBus().Publish(event);
   }
 }
 

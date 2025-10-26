@@ -6,6 +6,8 @@
 
 #include "os.grpc.pb.h"
 #include "zurg/logger_manager.h"
+#include "zurg/agent/events.h"
+#include "zurg/event/agent_events.h"
 #include <google/protobuf/util/time_util.h>
 
 #include <chrono>
@@ -550,6 +552,86 @@ TEST_F(CallbackAgentIntegrationTest, SequentialLogTasksExecuteInOrder) {
 
   zurg::agent::internal::RequestStop();
   agent_thread_.join();
+}
+
+TEST_F(CallbackAgentIntegrationTest, AuthStateControlsLogFilterTasks) {
+  StartAgentThread();
+  ASSERT_TRUE(service_.WaitForStream(3000ms));
+  ASSERT_TRUE(service_.WaitForMessages(1, 1000ms));
+
+  namespace events = zurg::agent::events;
+  events::GlobalEventBus().Publish(events::AuthStateChangedEvent{zurg::auth::AuthState::kOffline});
+
+  namespace fs = std::filesystem;
+  fs::path log_file = log_dir_ / "agent.log";
+  {
+    std::ofstream os(log_file);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.test] [info] line" << std::endl;
+  }
+
+  ops::v1::LogFilterSpec spec;
+  spec.add_level_in("info");
+  google::protobuf::Timestamp start_ts;
+  google::protobuf::Timestamp end_ts;
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T10:00:00Z", &start_ts));
+  ASSERT_TRUE(google::protobuf::util::TimeUtil::FromString("2025-09-27T12:00:00Z", &end_ts));
+  *spec.mutable_start_time() = start_ts;
+  *spec.mutable_end_time() = end_ts;
+
+  ASSERT_TRUE(service_.SendLogFilterStart(50, spec));
+  ASSERT_TRUE(service_.WaitForMessages(2, 1000ms));
+
+  {
+    auto messages = service_.SnapshotMessages();
+    bool saw_denied_ack = false;
+    for (const auto& msg : messages) {
+      if (msg.msg_case() == ops::v1::AgentToServer::kAck && msg.ack().op_id() == 50u) {
+        saw_denied_ack = true;
+        EXPECT_FALSE(msg.ack().accepted());
+        EXPECT_EQ(msg.ack().reason(), "authorization disabled");
+      }
+    }
+    EXPECT_TRUE(saw_denied_ack);
+  }
+
+  events::GlobalEventBus().Publish(events::AuthStateChangedEvent{zurg::auth::AuthState::kOnline});
+
+  auto before = service_.SnapshotMessages().size();
+  ASSERT_TRUE(service_.SendLogFilterStart(51, spec));
+  ASSERT_TRUE(service_.WaitForMessages(before + 3, 2000ms));
+
+  bool saw_accept = false;
+  bool saw_data = false;
+  bool saw_eof = false;
+  {
+    auto messages = service_.SnapshotMessages();
+    for (const auto& msg : messages) {
+      if (msg.msg_case() == ops::v1::AgentToServer::kAck && msg.ack().op_id() == 51u) {
+        saw_accept = msg.ack().accepted();
+      }
+      if (msg.msg_case() == ops::v1::AgentToServer::kData &&
+          msg.data().op_id() == 51u && msg.data().has_log_chunk()) {
+        saw_data = true;
+      }
+      if (msg.msg_case() == ops::v1::AgentToServer::kEof && msg.eof().op_id() == 51u &&
+          msg.eof().has_log()) {
+        saw_eof = true;
+      }
+    }
+  }
+  EXPECT_TRUE(saw_accept);
+  EXPECT_TRUE(saw_data);
+  EXPECT_TRUE(saw_eof);
+
+  ASSERT_TRUE(service_.SendShutdown(false));
+  ASSERT_TRUE(service_.WaitForDone(2000ms));
+
+  zurg::agent::internal::RequestStop();
+  agent_thread_.join();
+
+  // Ensure subsequent tests start from enabled state.
+  events::GlobalEventBus().Publish(events::AuthStateChangedEvent{zurg::auth::AuthState::kOnline});
 }
 
 TEST_F(CallbackAgentIntegrationTest, HandlesExecTaskCollectsInterfaces) {
