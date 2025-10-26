@@ -70,10 +70,21 @@ struct InterfaceInfo {
 
 }  // namespace
 
-ExecTask::ExecTask(const std::string& op_id,
+ExecTask::ExecTask(std::uint32_t op_id,
                    const ops::v1::ExecSpec& spec,
                    std::shared_ptr<spdlog::logger> logger)
     : Task(op_id, Kind::kExec, std::move(logger)), spec_(spec) {}
+
+bool ExecTask::Validate(std::string* reason) const {
+  if (!spec_.cmd().empty()) {
+    std::string cmd = spec_.cmd();
+    if (cmd != "ip" && cmd != "ip addr" && cmd != "ipaddress") {
+      if (reason) *reason = "unsupported exec command";
+      return false;
+    }
+  }
+  return true;
+}
 
 void ExecTask::Run(TaskContext& ctx) {
   SetState(State::kRunning);

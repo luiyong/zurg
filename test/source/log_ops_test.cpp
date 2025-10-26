@@ -1,13 +1,15 @@
 #include "zurg/log_ops.h"
+#include "zurg/log_ops_internal.h"
 
 #include <gtest/gtest.h>
 
 #include <google/protobuf/util/time_util.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -20,7 +22,8 @@ class TempDir {
  public:
   TempDir() {
     auto base = fs::temp_directory_path();
-    path_ = base / fs::path("zurg-logops-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())) ;
+    path_ = base / fs::path("zurg-logops-" +
+                            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(path_);
   }
   ~TempDir() {
@@ -46,10 +49,10 @@ TEST(LogOpsTest, FiltersByTimeLevelAndSubstring) {
   zurg::log_ops::Options opts;
   opts.log_root = tmp.path().string();
   opts.temp_dir = tmp.path().string();
+  opts.base_path = "agent.log";
   opts.cleanup_temp_file = false;  // ensure eof path points to existing file for assertions
 
   ops::v1::LogFilterSpec spec;
-  spec.set_base_path("agent.log");
   spec.add_level_in("info");
   spec.set_grep_contains("keep");
   google::protobuf::Timestamp start_ts;
@@ -66,7 +69,7 @@ TEST(LogOpsTest, FiltersByTimeLevelAndSubstring) {
   };
 
   ops::v1::LogFilterEof eof;
-  auto status = zurg::log_ops::StreamLogFilter(opts, spec, zurg::log_ops::ShouldStopFn{}, consumer, &eof);
+  auto status = zurg::log_ops::StreamLogFilter(opts, spec, consumer, &eof);
   ASSERT_TRUE(status.ok()) << status.error_message();
   EXPECT_NE(concatenated.find("keep me"), std::string::npos);
   EXPECT_EQ(concatenated.find("skip"), std::string::npos);
@@ -94,11 +97,11 @@ TEST(LogOpsTest, FiltersAcrossRotations) {
   zurg::log_ops::Options opts;
   opts.log_root = tmp.path().string();
   opts.temp_dir = tmp.path().string();
+  opts.base_path = "agent.log";
+  opts.include_rotations = true;
+  opts.rotation_scan_depth = 1;
 
   ops::v1::LogFilterSpec spec;
-  spec.set_base_path("agent.log");
-  spec.set_include_rotations(true);
-  spec.set_rotation_scan_depth(1);
   spec.add_level_in("info");
   google::protobuf::Timestamp start_ts;
   google::protobuf::Timestamp end_ts;
@@ -114,7 +117,7 @@ TEST(LogOpsTest, FiltersAcrossRotations) {
   };
 
   ops::v1::LogFilterEof eof;
-  auto status = zurg::log_ops::StreamLogFilter(opts, spec, zurg::log_ops::ShouldStopFn{}, consumer, &eof);
+  auto status = zurg::log_ops::StreamLogFilter(opts, spec, consumer, &eof);
   ASSERT_TRUE(status.ok()) << status.error_message();
   EXPECT_NE(concatenated.find("from rotation"), std::string::npos);
   EXPECT_NE(concatenated.find("from base"), std::string::npos);
@@ -133,9 +136,9 @@ TEST(LogOpsTest, RespectsOutputLimit) {
   zurg::log_ops::Options opts;
   opts.log_root = tmp.path().string();
   opts.temp_dir = tmp.path().string();
+  opts.base_path = "agent.log";
 
   ops::v1::LogFilterSpec spec;
-  spec.set_base_path("agent.log");
   spec.add_level_in("info");
   google::protobuf::Timestamp start_ts;
   google::protobuf::Timestamp end_ts;
@@ -146,9 +149,99 @@ TEST(LogOpsTest, RespectsOutputLimit) {
   spec.set_max_output_bytes(1);
 
   ops::v1::LogFilterEof eof;
-  auto status = zurg::log_ops::StreamLogFilter(opts, spec, zurg::log_ops::ShouldStopFn{},
+  auto status = zurg::log_ops::StreamLogFilter(opts, spec,
                                                [](ops::v1::LogChunk) { return ::grpc::Status::OK; }, &eof);
   EXPECT_EQ(status.error_code(), ::grpc::StatusCode::RESOURCE_EXHAUSTED);
+}
+
+TEST(LogOpsInternalTest, EnumerateCandidatesRespectsDepth) {
+  fs::path base("/var/log/agent.log");
+  auto candidates = zurg::log_ops::internal::EnumerateCandidates(base, true, 2);
+  EXPECT_NE(std::find(candidates.begin(), candidates.end(), base), candidates.end());
+  EXPECT_NE(std::find(candidates.begin(), candidates.end(), fs::path("/var/log/agent.log.1")), candidates.end());
+  EXPECT_NE(std::find(candidates.begin(), candidates.end(), fs::path("/var/log/agent.log.2")), candidates.end());
+}
+
+TEST(LogOpsInternalTest, FilterLogsToTempProducesMetrics) {
+  TempDir tmp;
+  fs::path log_file = tmp.path() / "agent.log";
+  {
+    std::ofstream os(log_file);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.test] [info] hello" << std::endl;
+  }
+
+  auto root = zurg::log_ops::internal::MakeRoot(tmp.path().string());
+  ASSERT_TRUE(root);
+  auto resolved = zurg::log_ops::internal::ResolvePath(*root, "agent.log");
+  ASSERT_TRUE(resolved);
+  auto candidates = zurg::log_ops::internal::EnumerateCandidates(*resolved, false, 0);
+
+  zurg::log_ops::Options opts;
+  opts.log_root = tmp.path().string();
+  opts.temp_dir = tmp.path().string();
+  opts.base_path = "agent.log";
+
+  ops::v1::LogFilterSpec spec;
+  google::protobuf::Timestamp start_ts;
+  google::protobuf::Timestamp end_ts;
+  ASSERT_TRUE(TimeUtil::FromString("2025-09-27T10:00:00Z", &start_ts));
+  ASSERT_TRUE(TimeUtil::FromString("2025-09-27T12:00:00Z", &end_ts));
+  *spec.mutable_start_time() = start_ts;
+  *spec.mutable_end_time() = end_ts;
+
+  zurg::log_ops::internal::FilterMetrics metrics;
+  auto status = zurg::log_ops::internal::FilterLogsToTemp(*root, opts, spec, candidates, &metrics);
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_GT(metrics.total_size, 0);
+  EXPECT_EQ(metrics.total_lines, 1);
+  EXPECT_FALSE(metrics.temp_path.empty());
+  EXPECT_TRUE(fs::exists(metrics.temp_path));
+
+  status = zurg::log_ops::internal::StreamFilteredFile(opts,
+                                                       [](ops::v1::LogChunk) { return ::grpc::Status::OK; },
+                                                       &metrics);
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_FALSE(fs::exists(metrics.temp_path));
+}
+
+TEST(LogOpsInternalTest, StreamFileCancellationPropagates) {
+  TempDir tmp;
+  fs::path log_file = tmp.path() / "agent.log";
+  {
+    std::ofstream os(log_file);
+    ASSERT_TRUE(os.is_open());
+    os << "[2025-09-27 11:00:00.000] [agent.test] [info] hello" << std::endl;
+  }
+
+  auto root = zurg::log_ops::internal::MakeRoot(tmp.path().string());
+  ASSERT_TRUE(root);
+  auto resolved = zurg::log_ops::internal::ResolvePath(*root, "agent.log");
+  ASSERT_TRUE(resolved);
+  auto candidates = zurg::log_ops::internal::EnumerateCandidates(*resolved, false, 0);
+
+  zurg::log_ops::Options opts;
+  opts.log_root = tmp.path().string();
+  opts.temp_dir = tmp.path().string();
+  opts.base_path = "agent.log";
+
+  ops::v1::LogFilterSpec spec;
+  google::protobuf::Timestamp start_ts;
+  google::protobuf::Timestamp end_ts;
+  ASSERT_TRUE(TimeUtil::FromString("2025-09-27T10:00:00Z", &start_ts));
+  ASSERT_TRUE(TimeUtil::FromString("2025-09-27T12:00:00Z", &end_ts));
+  *spec.mutable_start_time() = start_ts;
+  *spec.mutable_end_time() = end_ts;
+
+  zurg::log_ops::internal::FilterMetrics metrics;
+  auto status = zurg::log_ops::internal::FilterLogsToTemp(*root, opts, spec, candidates, &metrics);
+  ASSERT_TRUE(status.ok());
+
+  status = zurg::log_ops::internal::StreamFilteredFile(opts,
+                                                       [](ops::v1::LogChunk) { return ::grpc::Status::OK; },
+                                                       &metrics);
+  ASSERT_TRUE(status.ok()) << status.error_message();
+  EXPECT_FALSE(fs::exists(metrics.temp_path));
 }
 
 }  // namespace

@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # 复制编译好的应用
-COPY build/standalone/Greeter ./Greeter
+COPY build/standalone/zurg_agent ./zurg_agent
 
 # 设置默认命令
-CMD ["./Greeter", "--help"]
+CMD ["./zurg_agent", "--help"]

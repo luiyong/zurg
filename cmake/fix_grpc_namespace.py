@@ -8,6 +8,8 @@ REPLACEMENTS = {
     "::grpc_impl::": "::grpc::",
     "::grpc::experimental::ClientBidiReactor": "::grpc::ClientBidiReactor",
     "::grpc::experimental::ServerBidiReactor": "::grpc::ServerBidiReactor",
+    "::grpc::experimental::ClientReadReactor": "::grpc::ClientReadReactor",
+    "::grpc::experimental::ServerWriteReactor": "::grpc::ServerWriteReactor",
     "::grpc::experimental::CallbackServerContext": "::grpc::CallbackServerContext",
 }
 

@@ -1,5 +1,29 @@
-/** @page about About
-  @section doc ModernCppStarter Documentation 
-  This is the auto-generated documentation for the initial project of the ModernCppStarter.
-  It shows how we can use Doxygen to automatically build a browsable documentation for your projects.
+/** @page about 关于 Zurg
+  @section overview 项目简介
+  Zurg 是一个面向 gNOI Agent 的 C++ 实现示例，包含日志过滤、PCAP 抓包、任务调度与回调客户端等模块。
+  核心库位于 `include/zurg` 与 `source/zurg`，可在其他代理程序中直接复用；`standalone/zurg_agent`
+  提供了完整的控制流实现，演示如何串行执行日志、抓包、执行类操作并与控制面通信。
+
+  @section modules 模块速览
+  - @ref zurg::log_ops "日志过滤"：提供按时间、内容和 BPF 条件的增量式读取。
+  - @ref zurg::pcap_ops "PCAP 抓包"：使用 libpcap 或合成源生成 Packet/Stats，支持应答取消。
+  - @ref zurg::logging::LoggerManager "Logger 管理"：统一 spdlog sink 与日志级别，适合测试钩子。
+  - Agent Callback 客户端：利用 gRPC Callback API 处理 `Control.Connect`，支持自动重连与任务队列。
+  - zurg::temp_file：封装临时目录创建、唯一文件命名及按块回读逻辑，供日志过滤与抓包任务共享。
+  - YAML 配置：通过 `features` 开关选择是否启用日志过滤、PCAP 抓包及命令执行。
+
+  @section build 构建与测试
+  - 核心库：`cmake -S . -B build && cmake --build build`
+  - Agent：`cmake -S standalone -B build/standalone`
+  - 测试：`cmake -S test -B build/test && cmake --build build/test --target test`
+  - 配置：运行时通过 `zurg_agent --config /path/to/zurg_agent.yaml` 载入功能开关。
+
+  @section protocol 协议要点
+  - 控制通道中的 `op_id` 统一使用 `uint32`，Agent 以数值索引任务并进行去重。
+  - 日志过滤与抓包操作仍遵循“先写临时文件、再读取上传”的流程，临时文件由 `zurg::temp_file` 统一管理，可在此基础上扩展压缩等能力。
+  - `LogFilterSpec` 只包含时间窗口与内容过滤条件；日志路径、轮转深度等细节通过配置文件的 `log_filter.*` 字段指定。
+
+  @section doc 文档
+  使用 `cmake -S documentation -B build/docs && cmake --build build/docs --target GenerateDocs`
+  生成 API 与概览文档，输出位于 `build/docs/doxygen/`。
 */

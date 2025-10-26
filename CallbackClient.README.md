@@ -62,12 +62,21 @@
   - `OnDone`：处理流结束（异常/正常），触发重连或退出。
 - **重连策略**：指数回退（复用现有 `ComputeBackoff` 逻辑），尊重 `Shutdown` 指令。
 
+### 事件驱动的授权与主备控制
+
+- 引入 `eventpp::EventDispatcher` 封装成全局 `EventBus`，使用 `AuthStateChangedEvent` 广播授权结果。
+- `AuthManager` 在离/在线校验、连接状态变化时通过 `EventBus` 发布事件，并缓存最后一次状态，保证后续订阅者能立即获取。
+- `ControlCallbackClient` 在构造时订阅授权事件：
+  - `AuthState::kOnline` → 恢复配置文件定义的 `FeatureToggles`；
+  - 非在线状态 → 自动关闭日志过滤/抓包/命令执行任务，拒绝新的 `StartOp`，并取消排队任务。
+- 架构天然支持后续扩展的主备切换等事件，只需定义新的事件类型并订阅对应回调，不影响现有模块耦合度。
+
 ### 2. TaskDispatcher
 
 - 持有串行任务队列与执行线程。
 - 收到 `StartOp` 时：
   1. 立即回应 `OpAck(accepted=true)`。
-  2. 构造 `Task`（包含 op_id、spec、状态句柄），压入队列。
+  2. 构造 `Task`（包含 `uint32` 类型的 op_id、spec、状态句柄），压入队列。
   3. 唤醒执行线程，若空闲则马上运行。
 - 收到 `CancelOp` 时：
   - 若任务在队列中，标记取消并发送 `OpError`/`OpEof`。
@@ -85,9 +94,10 @@
 ### 4. Task Runner
 
 - **LogFilterTaskRunner**：调用 `log_ops::StreamLogFilter`，将筛选后的日志块封装为 `OpData`。
-- **PcapTaskRunner**：调用 `pcap_ops::StreamCapture` 捕获数据，生成临时 PCAP 文件并以块形式上传，最后返回 `PcapStats`。
+- **PcapTaskRunner**：调用 `pcap_ops::StreamCapture` 捕获数据，生成临时 PCAP 文件并以块形式上传（临时文件管理由 `zurg::temp_file` 统一处理），最后返回 `PcapStats`。
 - **ExecTaskRunner**：当前支持 `ip addr` 场景，枚举已 UP 的网络接口并返回结构化文本。
 - 统一接口：`Run(TaskContext&) -> TaskResult`，负责在结束时发送 `OpEof` 或 `OpError`。
+- `Task` 在入队前会执行参数校验；若失败立刻返回 `OpAck(accepted=false, reason="...")`，避免占用执行线程。
 
 ---
 
@@ -122,7 +132,7 @@
 
 1. **单位测试**：
    - `TaskDispatcher` 队列行为、取消逻辑、Shutdown 分支。
-   - Runner 的错误处理（使用假数据源）。
+- Runner 的错误处理（使用假数据源）。
 
 2. **Mock gRPC 测试**：
    - 利用 in-process server 模拟 `ServerToAgent` 消息，验证消息序列。
@@ -163,13 +173,12 @@
 ## 当前进度 & 后续事项（2025-09-24）
 
 - ✅ `ControlCallbackClient` 已完成，串行任务队列、取消、Shutdown 逻辑在现有单元测试中得到验证。
-- ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetLoggerSinkForTests` 捕获。
+- ✅ 日志统一接入 `LoggerManager`，连接重试、StartOp/Ack/Data/Eof/Shutdown 等关键路径都会产生日志，可通过 `SetAdditionalLoggerSink` 捕获。
 - ✅ gRPC 版本已升级至 1.62.0，`GRPC_CALLBACK_API_NONEXPERIMENTAL` 在本地与 CI 默认启用。
 
 - 🟢 `CallbackAgentIntegrationTest.HandlesLogFilterAndShutdown` 已启用，用于验证回调流的基本握手、日志过滤数据回传以及 Shutdown(drain=false) 行为。
 - 🟢 `CallbackAgentIntegrationTest.HandlesExecTaskCollectsInterfaces` 覆盖 exec 任务的输出与退出码回传。
-
-- 📝 测试时可继续使用 `SetSendHookForTests`/`SetLoggerSinkForTests` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
+- 📝 测试时可继续使用 `SetSendHookForTests`/`SetAdditionalLoggerSink` 捕获客户端输出，验证 Ack/Data/Eof 序列与日志内容。
 - ⏭️ 下一步：扩展端到端测试覆盖（包括 Cancel、drain=true 等分支），并引入 callback server 端的稳定桩件用于 CI。
 
 ### 推荐容器环境

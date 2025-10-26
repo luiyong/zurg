@@ -20,4 +20,4 @@ COPY . .
 RUN cmake -S standalone -B build/standalone && cmake --build build/standalone
 
 # 运行应用
-CMD ["./build/standalone/Greeter", "--help"]
+CMD ["./build/standalone/zurg_agent", "--help"]
