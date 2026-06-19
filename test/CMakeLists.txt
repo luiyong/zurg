@@ -16,7 +16,7 @@ option(ENABLE_AUTH_TESTS "Build auth client/unit tests" OFF)
 
 # 使用系统安装的 GoogleTest（建议通过包管理器安装）
 find_package(GTest REQUIRED)
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf REQUIRED)
 
 if (NOT Protobuf_PROTOC_EXECUTABLE AND TARGET protobuf::protoc)
   get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION)
@@ -87,7 +87,7 @@ if(NOT spdlog_FOUND)
       /usr/include
   )
   if(NOT SPDLOG_INCLUDE_DIR)
-    message(FATAL_ERROR "spdlog headers not found; install libspdlog-dev 或先配置顶层工程")
+
   endif()
 endif()
 

@@ -81,6 +81,9 @@ target_link_libraries(${PROJECT_NAME}
     fmt::fmt
     yaml-cpp::yaml-cpp
     ${GRPCPP_LINK_LIBS}
+    asio-grpc::asio-grpc
+
+    httplib::httplib
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
