@@ -53,10 +53,33 @@ if(eventpp_ADDED)
   target_include_directories(eventpp INTERFACE ${eventpp_SOURCE_DIR}/include)
 endif()
 
+CPMAddPackage(
+  NAME asio
+  GITHUB_REPOSITORY chriskohlhoff/asio
+  GIT_TAG asio-1-30-2
+)
+if(asio_ADDED AND NOT TARGET asio::asio)
+  add_library(asio::asio INTERFACE IMPORTED)
+  target_include_directories(asio::asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
+  target_compile_definitions(asio::asio INTERFACE ASIO_STANDALONE)
+endif()
+
+CPMAddPackage(
+  NAME asio-grpc
+  GITHUB_REPOSITORY Tradias/asio-grpc
+  VERSION 2.8.0
+)
+
+CPMAddPackage(
+  NAME httplib
+  GITHUB_REPOSITORY yhirose/cpp-httplib
+  VERSION 0.15.3
+)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf REQUIRED)
 
 if (TARGET protobuf::protoc)
   get_target_property(_PROTOC_LOCATION protobuf::protoc IMPORTED_LOCATION)
@@ -145,7 +168,7 @@ file(GLOB_RECURSE headers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include
 file(GLOB_RECURSE sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp")
 
 list(APPEND headers ${OS_PROTO_HDR} ${OS_GRPC_PROTO_HDR} ${AUTH_PROTO_HDR} ${AUTH_GRPC_PROTO_HDR})
-list(APPEND sources ${OS_PROTO_SRC} ${OS_GRPC_PROTO_SRC} ${AUTH_PROTO_SRC} ${AUTH_GRPC_PROTO_SRC})
+list(APPEND sources ${OS_PROTO_SRC} ${OS_GRPC_PROTO_SRC} ${AUTH_PROTO_SRC} ${AUTH_GRPC_PROTO_SRC} source/zurg/agent/http_server.cpp)
 
 # ---- Create library ----
 
@@ -161,7 +184,7 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>
 # Link dependencies
 target_link_libraries(
   ${PROJECT_NAME}
-  PUBLIC spdlog::spdlog protobuf::libprotobuf ${PCAP_LIBRARIES} ${GRPCPP_LINK_LIBS} eventpp
+  PUBLIC spdlog::spdlog protobuf::libprotobuf ${PCAP_LIBRARIES} ${GRPCPP_LINK_LIBS} eventpp asio-grpc::asio-grpc asio::asio httplib::httplib
 )
 
 if(GRPCPP_LIBRARY_DIRS)
