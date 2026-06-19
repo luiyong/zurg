@@ -18,43 +18,107 @@ if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   )
 endif()
 
-if(EXISTS "${PROJECT_SOURCE_DIR}/test/CMakeLists.txt")
-  add_subdirectory(test)
-endif()
-
 # ---- Add dependencies via CPM ----
 # see https://github.com/TheLartians/CPM.cmake for more info
 
 include(cmake/CPM.cmake)
 
-CPMAddPackage(
-  NAME fmt
-  GIT_TAG 10.2.1
-  GITHUB_REPOSITORY fmtlib/fmt
-  OPTIONS "FMT_INSTALL YES" # create an installable target
-)
+if(EXISTS "${PROJECT_SOURCE_DIR}/third_party/fmt/CMakeLists.txt")
+  set(FMT_DOC OFF CACHE BOOL "" FORCE)
+  set(FMT_TEST OFF CACHE BOOL "" FORCE)
+  set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/fmt ${PROJECT_BINARY_DIR}/third_party/fmt)
+else()
+  CPMAddPackage(
+    NAME fmt
+    GIT_TAG 10.2.1
+    GITHUB_REPOSITORY fmtlib/fmt
+    OPTIONS "FMT_INSTALL YES" # create an installable target
+  )
+endif()
 
 # Add spdlog dependency
-CPMAddPackage(
-  NAME spdlog
-  GIT_TAG v1.14.1
-  GITHUB_REPOSITORY gabime/spdlog
-)
+if(EXISTS "${PROJECT_SOURCE_DIR}/third_party/spdlog/CMakeLists.txt")
+  set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/spdlog
+                   ${PROJECT_BINARY_DIR}/third_party/spdlog)
+else()
+  CPMAddPackage(
+    NAME spdlog
+    GIT_TAG v1.14.1
+    GITHUB_REPOSITORY gabime/spdlog
+  )
+endif()
 
-CPMAddPackage(
-  NAME eventpp
-  GITHUB_REPOSITORY wqking/eventpp
-  GIT_TAG v0.1.3
-  DOWNLOAD_ONLY YES
-)
+if(EXISTS "${PROJECT_SOURCE_DIR}/third_party/eventpp/CMakeLists.txt")
+  set(EVENTPP_INSTALL OFF CACHE BOOL "" FORCE)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/eventpp
+                   ${PROJECT_BINARY_DIR}/third_party/eventpp)
+else()
+  CPMAddPackage(
+    NAME eventpp
+    GITHUB_REPOSITORY wqking/eventpp
+    GIT_TAG v0.1.3
+    DOWNLOAD_ONLY YES
+  )
+  if(eventpp_ADDED)
+    add_library(eventpp INTERFACE)
+    target_include_directories(eventpp INTERFACE ${eventpp_SOURCE_DIR}/include)
+  endif()
+endif()
 
-if(eventpp_ADDED)
-  add_library(eventpp INTERFACE)
-  target_include_directories(eventpp INTERFACE ${eventpp_SOURCE_DIR}/include)
+find_package(nlohmann_json CONFIG QUIET)
+if(NOT TARGET nlohmann_json::nlohmann_json)
+  find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp
+    HINTS
+      ${PROJECT_SOURCE_DIR}/third_party/json/include
+      /opt/homebrew/include
+      /usr/local/include
+      /usr/include
+  )
+  if(NOT NLOHMANN_JSON_INCLUDE_DIR)
+    CPMAddPackage(
+      NAME nlohmann_json
+      GITHUB_REPOSITORY nlohmann/json
+      GIT_TAG v3.11.3
+      OPTIONS "JSON_BuildTests OFF" "JSON_Install OFF"
+    )
+  else()
+    add_library(nlohmann_json INTERFACE)
+    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+    target_include_directories(nlohmann_json INTERFACE ${NLOHMANN_JSON_INCLUDE_DIR})
+  endif()
 endif()
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(PCAP REQUIRED libpcap)
+pkg_check_modules(PCAP libpcap)
+if(PCAP_FOUND)
+  set(PCAP_LIBRARIES ${PCAP_LIBRARIES})
+  set(PCAP_INCLUDE_DIRS ${PCAP_INCLUDE_DIRS})
+  set(PCAP_CFLAGS_OTHER ${PCAP_CFLAGS_OTHER})
+else()
+  find_path(PCAP_INCLUDE_DIR pcap.h
+    HINTS
+      /opt/homebrew/include
+      /usr/local/include
+      /usr/include
+  )
+  find_library(PCAP_LIBRARY pcap
+    HINTS
+      /opt/homebrew/lib
+      /usr/local/lib
+      /usr/lib
+  )
+  if(NOT PCAP_INCLUDE_DIR OR NOT PCAP_LIBRARY)
+    message(FATAL_ERROR "libpcap headers or libraries not found; install libpcap-dev / brew install libpcap")
+  endif()
+  set(PCAP_LIBRARIES ${PCAP_LIBRARY})
+  set(PCAP_INCLUDE_DIRS ${PCAP_INCLUDE_DIR})
+  set(PCAP_CFLAGS_OTHER "")
+endif()
 
 find_package(Protobuf CONFIG REQUIRED)
 
@@ -153,7 +217,7 @@ list(APPEND sources ${OS_PROTO_SRC} ${OS_GRPC_PROTO_SRC} ${AUTH_PROTO_SRC} ${AUT
 # target: add_library(${PROJECT_NAME} INTERFACE)
 add_library(${PROJECT_NAME} ${headers} ${sources})
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
 
 # being a cross-platform target, we enforce standards conformance on MSVC
 target_compile_options(${PROJECT_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/permissive->")
@@ -162,6 +226,7 @@ target_compile_options(${PROJECT_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>
 target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC spdlog::spdlog protobuf::libprotobuf ${PCAP_LIBRARIES} ${GRPCPP_LINK_LIBS} eventpp
+         nlohmann_json::nlohmann_json
 )
 
 if(GRPCPP_LIBRARY_DIRS)
@@ -178,6 +243,10 @@ target_include_directories(
     $<BUILD_INTERFACE:${GRPCPP_INCLUDE_DIRS}>
 )
 target_compile_options(${PROJECT_NAME} PRIVATE ${PCAP_CFLAGS_OTHER} ${GRPCPP_COMPILE_OPTS})
+
+if(EXISTS "${PROJECT_SOURCE_DIR}/test/CMakeLists.txt")
+  add_subdirectory(test)
+endif()
 
 # ---- Formatting checks ----
 find_program(CLANG_FORMAT_EXECUTABLE NAMES clang-format)

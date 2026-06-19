@@ -1,12 +1,12 @@
 #include "agent/agent_impl.h"
 
+#include "agent/config/agent_config.h"
 #include "os.grpc.pb.h"
 #include "zurg/auth/auth_manager.h"
 
 #include <cxxopts.hpp>
 #include <fmt/core.h>
 #include <fmt/format.h>
-#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <chrono>
@@ -57,86 +57,6 @@ grpc::ChannelArguments MakeChannelArgs() {
   return args;
 }
 
-struct LoggingConfig {
-  std::string file;
-  std::size_t max_files = 5;
-  std::size_t max_size_bytes = 10 * 1024 * 1024;
-};
-
-struct AgentConfig {
-  struct Auth {
-    bool enabled = false;
-    std::string server;
-    std::string persistence_file;
-    std::string mode;
-  };
-
-  std::optional<zurg::agent::FeatureToggles> features;
-  std::optional<LoggingConfig> logging;
-  std::optional<zurg::log_ops::Options> log_filter;
-  std::optional<Auth> auth;
-};
-
-std::optional<AgentConfig> LoadAgentConfig(const std::string& path, std::string* error) {
-  try {
-    YAML::Node root = YAML::LoadFile(path);
-    AgentConfig config;
-
-    if (auto features = root["features"]) {
-      zurg::agent::FeatureToggles toggles;
-      toggles.enabled = features["enabled"].as<bool>(toggles.enabled);
-      toggles.enable_log_filter = features["log_filter"].as<bool>(toggles.enable_log_filter);
-      toggles.enable_pcap = features["pcap"].as<bool>(toggles.enable_pcap);
-      toggles.enable_exec = features["exec"].as<bool>(toggles.enable_exec);
-      if (!toggles.enabled) {
-        toggles.enable_log_filter = false;
-        toggles.enable_pcap = false;
-        toggles.enable_exec = false;
-      }
-      config.features = toggles;
-    }
-
-    if (auto logging = root["logging"]) {
-      LoggingConfig logging_cfg;
-      logging_cfg.file = logging["file"].as<std::string>(logging_cfg.file);
-      logging_cfg.max_files = logging["max_files"].as<std::size_t>(logging_cfg.max_files);
-      logging_cfg.max_size_bytes = logging["max_size_bytes"].as<std::size_t>(logging_cfg.max_size_bytes);
-      config.logging = logging_cfg;
-    }
-
-    if (auto log_filter = root["log_filter"]) {
-      zurg::log_ops::Options opts;
-      opts.log_root = log_filter["log_root"].as<std::string>(opts.log_root);
-      opts.temp_dir = log_filter["temp_dir"].as<std::string>(opts.temp_dir);
-      opts.chunk_size = log_filter["chunk_size"].as<std::size_t>(opts.chunk_size);
-      opts.cleanup_temp_file = log_filter["cleanup_temp_file"].as<bool>(opts.cleanup_temp_file);
-      opts.base_path = log_filter["base_path"].as<std::string>(opts.base_path);
-      opts.include_rotations = log_filter["include_rotations"].as<bool>(opts.include_rotations);
-      opts.rotation_scan_depth =
-          log_filter["rotation_scan_depth"].as<std::uint32_t>(opts.rotation_scan_depth);
-      opts.output_basename = log_filter["output_basename"].as<std::string>(opts.output_basename);
-      config.log_filter = opts;
-    }
-
-    if (auto auth = root["auth"]) {
-      AgentConfig::Auth auth_cfg;
-      auth_cfg.enabled = auth["enabled"].as<bool>(auth_cfg.enabled);
-      auth_cfg.server = auth["server"].as<std::string>(auth_cfg.server);
-      auth_cfg.persistence_file =
-          auth["persistence_file"].as<std::string>(auth_cfg.persistence_file);
-      auth_cfg.mode = auth["mode"].as<std::string>(auth_cfg.mode);
-      config.auth = auth_cfg;
-    }
-
-    return config;
-  } catch (const std::exception& ex) {
-    if (error) {
-      *error = ex.what();
-    }
-    return std::nullopt;
-  }
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -161,21 +81,24 @@ int main(int argc, char** argv) {
     agent_id = GenerateFallbackAgentId();
   }
 
-  std::optional<AgentConfig> agent_config;
-  std::optional<LoggingConfig> logging_cfg;
+  std::optional<zurg::agent::config::AgentConfig> agent_config;
+  std::optional<zurg::agent::config::LoggingConfig> logging_cfg;
   if (!config_path.empty()) {
     if (!std::filesystem::exists(config_path)) {
       fmt::print(stderr, "[agent] config file '{}' not found\n", config_path);
       return 1;
     }
     std::string error;
-    agent_config = LoadAgentConfig(config_path, &error);
+    agent_config = zurg::agent::config::LoadAgentConfig(config_path, &error);
     if (!agent_config) {
       fmt::print(stderr, "[agent] failed to load config '{}': {}\n", config_path, error);
       return 1;
     }
     if (agent_config->features) {
       zurg::agent::SetFeatureToggles(*agent_config->features);
+    }
+    if (!result.count("target")) {
+      target = agent_config->grpc.target;
     }
     if (agent_config->logging) {
       logging_cfg = *agent_config->logging;
@@ -268,6 +191,16 @@ int main(int argc, char** argv) {
              active_toggles.enable_pcap ? "on" : "off",
              active_toggles.enable_exec ? "on" : "off");
   fmt::print("{}", auth_status_message);
+  if (agent_config) {
+    fmt::print("[agent] grpc input: enabled={} target={}\n",
+               agent_config->grpc.enabled ? "on" : "off", agent_config->grpc.target);
+    fmt::print("[agent] http input: enabled={} listen={}:{}\n",
+               agent_config->http.enabled ? "on" : "off", agent_config->http.listen_address,
+               agent_config->http.port);
+    fmt::print("[agent] persistence: enabled={} path={}\n",
+               agent_config->persistence.enabled ? "on" : "off",
+               agent_config->persistence.path);
+  }
   if (logging_cfg && !logging_cfg->file.empty()) {
     fmt::print("[agent] logging to '{}' (max_files={}, max_size={} bytes)\n",
                logging_cfg->file, logging_cfg->max_files, logging_cfg->max_size_bytes);

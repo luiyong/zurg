@@ -293,12 +293,12 @@ class CallbackAgentIntegrationTest : public ::testing::Test {
 
     grpc::ServerBuilder builder;
     builder.RegisterService(&service_);
-    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.AddListeningPort("localhost:0", grpc::InsecureServerCredentials(), &port_);
     server_ = builder.BuildAndStart();
     ASSERT_TRUE(server_);
     ASSERT_GT(port_, 0);
 
-    auto channel = grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials());
+    auto channel = grpc::CreateChannel("localhost:" + std::to_string(port_), grpc::InsecureChannelCredentials());
     stub_ = ops::v1::Control::NewStub(channel);
   }
 

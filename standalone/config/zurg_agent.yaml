@@ -5,6 +5,19 @@ features:
   pcap: true
   exec: true
 
+grpc:
+  enabled: true
+  target: "127.0.0.1:50051"
+
+http:
+  enabled: true
+  listen_address: "127.0.0.1"
+  port: 8080
+
+persistence:
+  enabled: true
+  path: "/var/lib/zurg/tasks"
+
 logging:
   file: "/var/log/zurg/agent.log"
   max_files: 5                # 同步用于日志过滤的轮转扫描深度

@@ -4,6 +4,7 @@
 #include <grpcpp/impl/codegen/server_callback_handlers.h>
 
 #include "os.grpc.pb.h"
+#include "runtime/feature_toggles.h"
 #include "zurg/log_ops.h"
 
 #include <chrono>
@@ -16,13 +17,6 @@
 #include <spdlog/sinks/sink.h>
 
 namespace zurg { namespace agent {
-
-struct FeatureToggles {
-  bool enabled = true;
-  bool enable_log_filter = true;
-  bool enable_pcap = true;
-  bool enable_exec = true;
-};
 
 void StartAgent(ops::v1::Control::StubInterface* stub, const std::string& agent_id);
 void SetFeatureToggles(FeatureToggles toggles);

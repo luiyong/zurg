@@ -55,7 +55,9 @@ std::chrono::steady_clock::duration ExtractDuration(const ops::v1::PcapSpec& spe
     auto steady_now = std::chrono::steady_clock::now();
     auto offset = sys_now.time_since_epoch() - steady_now.time_since_epoch();
     return [offset](const std::chrono::steady_clock::time_point& tp) {
-      return std::chrono::system_clock::time_point(tp.time_since_epoch() + offset);
+      return std::chrono::system_clock::time_point(
+          std::chrono::duration_cast<std::chrono::system_clock::duration>(
+              tp.time_since_epoch() + offset));
     };
   }();
 

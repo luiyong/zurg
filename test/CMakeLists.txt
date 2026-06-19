@@ -91,6 +91,22 @@ if(NOT spdlog_FOUND)
   endif()
 endif()
 
+find_package(nlohmann_json CONFIG QUIET)
+if(NOT TARGET nlohmann_json::nlohmann_json)
+  find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp
+    HINTS
+      ${CMAKE_CURRENT_LIST_DIR}/../build/_deps/nlohmann_json-src/include
+      ${CMAKE_CURRENT_LIST_DIR}/../build-standalone/_deps/nlohmann_json-src/include
+      ${CMAKE_CURRENT_LIST_DIR}/../third_party/json/include
+      /usr/local/include
+      /usr/include
+      /opt/homebrew/include
+  )
+  if(NOT NLOHMANN_JSON_INCLUDE_DIR)
+    message(FATAL_ERROR "nlohmann/json.hpp not found; configure the top-level or standalone project first, or install nlohmann-json")
+  endif()
+endif()
+
 set(GENERATED_PROTO_DIR ${PROJECT_BINARY_DIR}/generated)
 
 # ---- Create binary ----
@@ -105,7 +121,15 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/source/logger_manager_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/log_ops_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/temp_file_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/source/task_runtime_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source/callback_agent_integration_test.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/jsonl_task_store.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/grpc_task_sink.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/task_context_adapter.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/task_event.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/task_factory.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/task_query_service.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/runtime/task_scheduler.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/log_filter_task.cpp
   ${CMAKE_CURRENT_LIST_DIR}/../standalone/source/agent/tasks/pcap_task.cpp
@@ -135,7 +159,7 @@ if(GRPCPP_LIBRARY_DIRS_RES)
   target_link_directories(${PROJECT_NAME} PRIVATE ${GRPCPP_LIBRARY_DIRS_RES})
 endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${GRPCPP_LINK_LIBS})
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
 
 # 这里不设置上层 zurg 目标的编译选项，避免依赖上层工程
 
@@ -165,6 +189,11 @@ if(NOT spdlog_FOUND)
   target_include_directories(${PROJECT_NAME} PRIVATE ${SPDLOG_INCLUDE_DIR})
 endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PCAP_LIBRARIES})
+if(TARGET nlohmann_json::nlohmann_json)
+  target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json)
+else()
+  target_include_directories(${PROJECT_NAME} PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
+endif()
 target_compile_options(${PROJECT_NAME} PRIVATE ${GRPCPP_COMPILE_OPTS} ${PCAP_CFLAGS_OTHER})
 
 # ---- code coverage ----
